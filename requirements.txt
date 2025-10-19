@@ -24,7 +24,7 @@ MarkupSafe==2.1.4
 matplotlib==3.8.2
 numpy==1.26.3
 packaging==23.2
-pandas==2.1.4
+pandas-ta>=0.3.14,<0.4
 # pandas-ta==0.3.14b   # <- quebrado
 git+https://github.com/twopirllc/pandas-ta.git
 patsy==0.5.6
