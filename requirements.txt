@@ -1,53 +1,71 @@
-altair==5.4.1
-attrs==23.2.0
-beautifulsoup4==4.12.3
-blinker==1.7.0
-cachetools==5.3.2
-certifi==2024.8.30
-cffi==1.16.0
-charset-normalizer==3.3.2
-click==8.1.7
-colorama==0.4.6
-contourpy==1.2.0
-cycler==0.12.1
-filelock==3.13.1
-fonttools==4.47.2
-gitdb==4.0.11
-GitPython==3.1.41
-idna==3.6
-Jinja2==3.1.3
-joblib==1.3.2
-jsonschema==4.21.1
-kiwisolver==1.4.5
-lxml==5.1.0
-MarkupSafe==2.1.4
-matplotlib==3.8.2
-numpy==1.26.3
-packaging==23.2
-pandas-ta>=0.3.14,<0.4
-# pandas-ta==0.3.14b   # <- quebrado
-git+https://github.com/twopirllc/pandas-ta.git
-patsy==0.5.6
-pillow==10.2.0
-plotly==5.18.0
-protobuf==4.25.2
-pyarrow==15.0.0
+# --- Núcleo do app / Web ---
+streamlit==1.30.0
+plotly>=5.18,<5.25
 pydeck==0.8.1
+requests>=2.31,<2.33
+yfinance==0.2.28
+
+# --- Base científica / dados ---
+numpy==1.26.4
+pandas==2.1.4
+pyarrow==15.0.0
+scipy>=1.13.1,<1.14
+scikit-learn>=1.4,<1.6
+statsmodels==0.14.1
+joblib==1.3.2
+patsy==0.5.6
+
+# --- Visualização e gráficos ---
+matplotlib==3.8.2
+altair==5.4.1
+
+# --- Árvores de dependências de matplotlib ---
+contourpy>=1.2,<1.4
+kiwisolver>=1.4.6,<1.5
+cycler==0.12.1
+fonttools==4.47.2
+pillow==10.2.0
 pyparsing==3.1.1
 python-dateutil==2.8.2
-pytz==2024.1
-requests==2.31.0
-scikit-learn==1.4.0
-scipy==1.12.0
-setuptools==69.0.3
 six==1.16.0
-statsmodels==0.14.1
-streamlit==1.30.0
-tenacity==8.2.3
-torch==2.1.2
-torchvision==0.16.2
-torchaudio==2.1.2
-typing_extensions==4.9.0
 tzdata==2024.1
+pytz==2024.1
+
+# --- Web scraping / utilidades ---
+beautifulsoup4==4.12.3
+lxml>=5.2,<6
+charset-normalizer==3.3.2
+idna==3.6
 urllib3==2.1.0
-yfinance==0.2.28
+certifi==2024.8.30
+filelock==3.13.1
+packaging==23.2
+cachetools==5.3.2
+tenacity==8.2.3
+colorama==0.4.6
+click==8.1.7
+
+# --- Streamlit internals / schema ---
+jsonschema==4.21.1
+Jinja2==3.1.3
+MarkupSafe==2.1.4
+blinker==1.7.0
+protobuf==4.25.2
+
+# --- Git integration (se você usa st.cache_data com repositórios etc.) ---
+GitPython==3.1.41
+gitdb==4.0.11
+
+# --- pandas-ta (evita git clone no deploy) ---
+pandas-ta @ https://github.com/twopirllc/pandas-ta/archive/refs/heads/master.zip
+
+# --- PyTorch (CPU) compatível com Python 3.12 ---
+torch==2.4.1
+torchvision==0.19.1
+torchaudio==2.4.1
+
+# --- Tipagem / compatibilidade ---
+typing_extensions==4.9.0
+
+# --- Build tools (pinned para evitar avisos do pip) ---
+setuptools==69.0.3
