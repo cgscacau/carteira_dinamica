@@ -486,14 +486,352 @@ if st.button("🚀 INICIAR ANÁLISE COMPLETA", type="primary", use_container_wid
         pesos_div = None
         ret_div = vol_div = sharpe_div = 0
         
-        if df_dividendos is not None and not df_dividendos.empty:
-            total_div = df_dividendos.sum()
-            if total_div.sum() > 0:
-                pesos_div = (total_div / total_div.sum()).values
-                ret_div, vol_div, sharpe_div = calcular_metricas_portfolio(
-                    pesos_div, retorno_esperado, matriz_cov, taxa_livre_risco
-                )
-    
+    # Dividendos
+    if df_dividendos is not None and not df_dividendos.empty:
+        st.divider()
+        st.header("💰 Análise Detalhada de Dividendos")
+        
+        # ========== GRÁFICO DE BARRAS EMPILHADAS ==========
+        st.subheader("📊 Distribuição Mensal de Dividendos")
+        
+        fig_div = go.Figure()
+        
+        for ativo in df_dividendos.columns:
+            fig_div.add_trace(go.Bar(
+                name=ativo,
+                x=df_dividendos.index.strftime('%b/%y'),
+                y=df_dividendos[ativo],
+                text=df_dividendos[ativo].apply(lambda x: f'R$ {x:.2f}' if x > 0 else ''),
+                textposition='inside',
+                hovertemplate='<b>%{fullData.name}</b><br>R$ %{y:.2f}<extra></extra>'
+            ))
+        
+        fig_div.update_layout(
+            xaxis_title="Mês",
+            yaxis_title="Dividendos (R$)",
+            barmode='stack',
+            height=500,
+            hovermode='x unified',
+            showlegend=True,
+            legend=dict(
+                orientation="v",
+                yanchor="top",
+                y=1,
+                xanchor="left",
+                x=1.02
+            )
+        )
+        
+        st.plotly_chart(fig_div, use_container_width=True)
+        
+        # ========== TABELA DE DIVIDENDOS MENSAIS ==========
+        st.subheader("📅 Tabela de Dividendos Mensais")
+        
+        # Preparar tabela
+        df_div_display = df_dividendos.copy()
+        df_div_display.index = df_div_display.index.strftime('%b/%Y')
+        
+        # Adicionar coluna de total mensal
+        df_div_display['💰 TOTAL MENSAL'] = df_div_display.sum(axis=1)
+        
+        # Adicionar linha de total por ativo
+        totais = df_div_display.sum()
+        df_div_display.loc['🏆 TOTAL'] = totais
+        
+        # Formatar e exibir
+        st.dataframe(
+            df_div_display.style.format('R$ {:.2f}').background_gradient(
+                cmap='Greens',
+                axis=None,
+                subset=pd.IndexSlice[df_div_display.index[:-1], df_div_display.columns]
+            ).set_properties(**{
+                'font-weight': 'bold'
+            }, subset=pd.IndexSlice['🏆 TOTAL', :]).set_properties(**{
+                'font-weight': 'bold',
+                'background-color': '#90EE90'
+            }, subset=pd.IndexSlice[:, '💰 TOTAL MENSAL']),
+            use_container_width=True
+        )
+        
+        # ========== GRÁFICO DE DIVIDENDOS ACUMULADOS ==========
+        st.subheader("📈 Evolução dos Dividendos Acumulados")
+        
+        df_div_acum = df_dividendos.cumsum()
+        
+        fig_div_acum = go.Figure()
+        
+        for ativo in df_div_acum.columns:
+            fig_div_acum.add_trace(go.Scatter(
+                name=ativo,
+                x=df_div_acum.index.strftime('%b/%y'),
+                y=df_div_acum[ativo],
+                mode='lines+markers',
+                line=dict(width=2),
+                marker=dict(size=6),
+                hovertemplate='<b>%{fullData.name}</b><br>Acumulado: R$ %{y:.2f}<extra></extra>'
+            ))
+        
+        fig_div_acum.update_layout(
+            xaxis_title="Mês",
+            yaxis_title="Dividendos Acumulados (R$)",
+            height=450,
+            hovermode='x unified',
+            showlegend=True
+        )
+        
+        st.plotly_chart(fig_div_acum, use_container_width=True)
+        
+        # ========== MÉTRICAS GERAIS ==========
+        st.subheader("📊 Métricas Gerais de Dividendos")
+        
+        total = df_dividendos.sum().sum()
+        media = df_dividendos.sum(axis=1).mean()
+        projecao = media * 12
+        meses_pagantes = (df_dividendos.sum(axis=1) > 0).sum()
+        total_meses = len(df_dividendos)
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            st.metric(
+                "💰 Total Recebido",
+                f"R$ {total:,.2f}",
+                help="Total de dividendos recebidos no período"
+            )
+        
+        with col2:
+            st.metric(
+                "📅 Média Mensal",
+                f"R$ {media:,.2f}",
+                help="Média de dividendos recebidos por mês"
+            )
+        
+        with col3:
+            st.metric(
+                "📈 Projeção Anual",
+                f"R$ {projecao:,.2f}",
+                help="Projeção anual baseada na média mensal"
+            )
+        
+        with col4:
+            st.metric(
+                "✅ Meses Pagantes",
+                f"{meses_pagantes}/{total_meses}",
+                help="Quantidade de meses que receberam dividendos"
+            )
+        
+        # ========== ANÁLISE POR ATIVO ==========
+        st.subheader("🏆 Ranking de Dividendos por Ativo")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.write("**💰 Total de Dividendos**")
+            
+            div_totais = df_dividendos.sum().sort_values(ascending=False)
+            
+            fig_rank = go.Figure(go.Bar(
+                x=div_totais.values,
+                y=div_totais.index,
+                orientation='h',
+                marker=dict(
+                    color=div_totais.values,
+                    colorscale='Greens',
+                    showscale=True
+                ),
+                text=div_totais.apply(lambda x: f'R$ {x:.2f}'),
+                textposition='outside',
+                hovertemplate='<b>%{y}</b><br>Total: R$ %{x:.2f}<extra></extra>'
+            ))
+            
+            fig_rank.update_layout(
+                xaxis_title="Dividendos Totais (R$)",
+                yaxis_title="Ativo",
+                height=400,
+                showlegend=False
+            )
+            
+            st.plotly_chart(fig_rank, use_container_width=True)
+            
+            # Tabela de totais
+            df_totais = pd.DataFrame({
+                'Ativo': div_totais.index,
+                'Total (R$)': div_totais.values,
+                '% do Total': (div_totais.values / div_totais.sum() * 100)
+            })
+            
+            st.dataframe(
+                df_totais.style.format({
+                    'Total (R$)': 'R$ {:.2f}',
+                    '% do Total': '{:.1f}%'
+                }).background_gradient(subset=['Total (R$)'], cmap='Greens'),
+                use_container_width=True,
+                hide_index=True
+            )
+        
+        with col2:
+            st.write("**📊 Dividend Yield Anualizado**")
+            
+            dy_data = []
+            for ativo in df_dividendos.columns:
+                if ativo in dados.columns:
+                    preco_medio = dados[ativo].mean()
+                    div_anual = (df_dividendos[ativo].sum() / len(df_dividendos)) * 12
+                    dy = (div_anual / preco_medio) * 100 if preco_medio > 0 else 0
+                    dy_data.append({'Ativo': ativo, 'DY': dy})
+            
+            df_dy = pd.DataFrame(dy_data).sort_values('DY', ascending=False)
+            
+            fig_dy = go.Figure(go.Bar(
+                x=df_dy['DY'],
+                y=df_dy['Ativo'],
+                orientation='h',
+                marker=dict(
+                    color=df_dy['DY'],
+                    colorscale='YlGn',
+                    showscale=True
+                ),
+                text=df_dy['DY'].apply(lambda x: f'{x:.2f}%'),
+                textposition='outside',
+                hovertemplate='<b>%{y}</b><br>DY: %{x:.2f}%<extra></extra>'
+            ))
+            
+            fig_dy.update_layout(
+                xaxis_title="Dividend Yield Anual (%)",
+                yaxis_title="Ativo",
+                height=400,
+                showlegend=False
+            )
+            
+            st.plotly_chart(fig_dy, use_container_width=True)
+            
+            # Tabela de DY
+            st.dataframe(
+                df_dy.style.format({'DY': '{:.2f}%'}).background_gradient(
+                    subset=['DY'], cmap='YlGn'
+                ),
+                use_container_width=True,
+                hide_index=True
+            )
+        
+        # ========== ANÁLISE DE FREQUÊNCIA ==========
+        st.subheader("📅 Análise de Frequência de Pagamentos")
+        
+        # Contar quantos meses cada ativo pagou
+        freq_pagamentos = (df_dividendos > 0).sum()
+        freq_pagamentos = freq_pagamentos.sort_values(ascending=False)
+        
+        fig_freq = go.Figure(go.Bar(
+            x=freq_pagamentos.index,
+            y=freq_pagamentos.values,
+            marker=dict(color='lightblue'),
+            text=freq_pagamentos.apply(lambda x: f'{x}/{total_meses}'),
+            textposition='outside',
+            hovertemplate='<b>%{x}</b><br>Pagou em %{y} meses<extra></extra>'
+        ))
+        
+        fig_freq.update_layout(
+            title="Quantidade de Meses com Pagamento de Dividendos",
+            xaxis_title="Ativo",
+            yaxis_title="Meses com Pagamento",
+            height=400,
+            showlegend=False
+        )
+        
+        st.plotly_chart(fig_freq, use_container_width=True)
+        
+        # ========== COMPARAÇÃO COM CARTEIRAS ==========
+        st.subheader("💼 Dividendos Estimados por Estratégia de Carteira")
+        
+        if len(estrategias) > 0:
+            div_estrategias = []
+            
+            for estrategia in estrategias:
+                # Calcular dividendos anuais estimados para cada estratégia
+                div_anual_estimado = 0
+                
+                for i, ativo in enumerate(ativos_com_dados):
+                    if ativo in df_dividendos.columns:
+                        peso = estrategia['Pesos'][i]
+                        div_ativo = (df_dividendos[ativo].sum() / len(df_dividendos)) * 12
+                        div_anual_estimado += peso * div_ativo * capital_inicial
+                
+                div_estrategias.append({
+                    'Estratégia': estrategia['Nome'],
+                    'Dividendos Anuais': div_anual_estimado,
+                    'Dividendos Mensais': div_anual_estimado / 12,
+                    'DY (%)': (div_anual_estimado / capital_inicial) * 100
+                })
+            
+            df_div_estrategias = pd.DataFrame(div_estrategias)
+            
+            # Gráfico de comparação
+            fig_comp_div = go.Figure()
+            
+            fig_comp_div.add_trace(go.Bar(
+                x=df_div_estrategias['Estratégia'],
+                y=df_div_estrategias['Dividendos Anuais'],
+                marker=dict(color=['#FF4B4B', '#00CC00', '#FFD700'][:len(df_div_estrategias)]),
+                text=df_div_estrategias['Dividendos Anuais'].apply(lambda x: f'R$ {x:,.2f}'),
+                textposition='outside',
+                hovertemplate='<b>%{x}</b><br>Anual: R$ %{y:,.2f}<extra></extra>'
+            ))
+            
+            fig_comp_div.update_layout(
+                title="Dividendos Anuais Estimados por Estratégia",
+                xaxis_title="Estratégia",
+                yaxis_title="Dividendos Anuais (R$)",
+                height=400,
+                showlegend=False
+            )
+            
+            st.plotly_chart(fig_comp_div, use_container_width=True)
+            
+            # Tabela de comparação
+            st.dataframe(
+                df_div_estrategias.style.format({
+                    'Dividendos Anuais': 'R$ {:.2f}',
+                    'Dividendos Mensais': 'R$ {:.2f}',
+                    'DY (%)': '{:.2f}%'
+                }).background_gradient(subset=['Dividendos Anuais'], cmap='Greens'),
+                use_container_width=True,
+                hide_index=True
+            )
+            
+            # Destaque para melhor dividendo
+            melhor_div = df_div_estrategias.loc[df_div_estrategias['Dividendos Anuais'].idxmax()]
+            
+            st.success(f"""
+            **🏆 Melhor Estratégia para Dividendos:** {melhor_div['Estratégia']}
+            
+            - Dividendos Anuais: R$ {melhor_div['Dividendos Anuais']:,.2f}
+            - Dividendos Mensais: R$ {melhor_div['Dividendos Mensais']:,.2f}
+            - Dividend Yield: {melhor_div['DY (%)']:.2f}%
+            """)
+        
+        # ========== CALENDÁRIO DE DIVIDENDOS ==========
+        st.subheader("📆 Calendário de Pagamentos")
+        
+        st.info("""
+        **💡 Dica:** Os dividendos mostrados são baseados no histórico do período selecionado. 
+        Para uma carteira focada em renda passiva, considere a estratégia "💰 Foco Dividendos" 
+        que aloca maior peso nos ativos que mais pagam dividendos.
+        """)
+    else:
+        st.info("""
+        ℹ️ **Nenhum dividendo encontrado** no período selecionado para os ativos escolhidos.
+        
+        **Possíveis razões:**
+        - Os ativos selecionados não pagaram dividendos no período
+        - O período de análise é muito curto
+        - Os dados de dividendos não estão disponíveis no Yahoo Finance
+        
+        **Sugestão:** Tente selecionar ativos conhecidos por pagar dividendos regulares, como:
+        - ITUB4.SA, BBDC4.SA (Bancos)
+        - TAEE11.SA, CPLE6.SA (Energia)
+        - FIIs (Fundos Imobiliários)
+        """)
+
     # Comparação
     st.subheader("📊 Comparação das Estratégias")
     
