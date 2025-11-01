@@ -408,36 +408,6 @@ if data_inicio >= data_fim:
     st.stop()
 
 
-# ==================== RESUMO DA SELEÇÃO ====================
-
-st.divider()
-
-ativos_finais = st.session_state.ativos_selecionados
-
-if ativos_finais:
-    col1, col2, col3 = st.columns([1, 2, 1])
-    
-    with col1:
-        st.metric("🎯 Ativos Selecionados", len(ativos_finais))
-    
-    with col2:
-        with st.expander("📋 Ver Lista Completa", expanded=False):
-            cols = st.columns(5)
-            for i, ativo in enumerate(sorted(ativos_finais)):
-                with cols[i % 5]:
-                    st.write(f"✓ {ativo}")
-    
-    with col3:
-        if st.button("🗑️ Limpar Tudo", use_container_width=True):
-            st.session_state.ativos_selecionados = []
-            st.rerun()
-else:
-    st.warning("⚠️ Nenhum ativo selecionado. Selecione ativos para continuar.")
-    st.stop()
-
-if data_inicio >= data_fim:
-    st.error("❌ Data inicial deve ser anterior à data final!")
-    st.stop()
 
 # ==================== ANÁLISE ====================
 
