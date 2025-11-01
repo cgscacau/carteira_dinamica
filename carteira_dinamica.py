@@ -551,9 +551,9 @@ if st.button("🚀 INICIAR ANÁLISE COMPLETA", type="primary", use_container_wid
     
     # Detalhamento
     st.divider()
-    st.header("📋 Detalhamento")
+    st.header("📋 Detalhamento das Carteiras")
     
-    for estrategia in estrategias:
+    for idx, estrategia in enumerate(estrategias):
         with st.expander(f"{estrategia['Nome']}"):
             df_alocacao = pd.DataFrame({
                 'Ativo': ativos_com_dados,
@@ -572,11 +572,14 @@ if st.button("🚀 INICIAR ANÁLISE COMPLETA", type="primary", use_container_wid
             )
             
             csv = df_alocacao.to_csv(index=False).encode('utf-8')
+            nome_arquivo = estrategia['Nome'].replace('🏆 ', '').replace('🛡️ ', '').replace('💰 ', '').replace(' ', '_').lower()
+            
             st.download_button(
-                f"📥 Download",
-                csv,
-                f"carteira_{datetime.now().strftime('%Y%m%d')}.csv",
-                "text/csv"
+                label=f"📥 Download {estrategia['Nome']}",
+                data=csv,
+                file_name=f"{nome_arquivo}_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+                key=f"download_estrategia_{idx}"
             )
     
     # Fronteira Eficiente
