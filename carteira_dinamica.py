@@ -369,6 +369,7 @@ if st.button("🚀 Iniciar Análise e Otimização", type="primary", use_contain
                             dividendos_data[ativo] = divs
                 
                 if dividendos_data:
+                    # Criar DataFrame com dividendos mensais
                     df_dividendos = pd.DataFrame()
                     
                     for ativo, divs in dividendos_data.items():
@@ -377,57 +378,272 @@ if st.button("🚀 Iniciar Análise e Otimização", type="primary", use_contain
                     
                     df_dividendos = df_dividendos.fillna(0)
                     
-                    # Gráfico de barras empilhadas
+                    # ========== GRÁFICO DE BARRAS MENSAIS ==========
+                    st.write("### 📊 Distribuição Mensal de Dividendos por Ativo")
+                    
                     fig_div = go.Figure()
                     
                     for ativo in df_dividendos.columns:
                         fig_div.add_trace(go.Bar(
                             name=ativo,
-                            x=df_dividendos.index,
+                            x=df_dividendos.index.strftime('%b/%Y'),
                             y=df_dividendos[ativo],
                             text=df_dividendos[ativo].apply(lambda x: f'R$ {x:.2f}' if x > 0 else ''),
-                            textposition='inside'
+                            textposition='inside',
+                            hovertemplate='<b>%{fullData.name}</b><br>R$ %{y:.2f}<extra></extra>'
                         ))
                     
                     fig_div.update_layout(
-                        title="Distribuição de Dividendos Mensais por Ativo",
+                        title="Dividendos Mensais Recebidos por Ativo",
                         xaxis_title="Mês",
                         yaxis_title="Dividendos (R$)",
                         barmode='stack',
                         height=500,
-                        hovermode='x unified'
+                        hovermode='x unified',
+                        legend=dict(
+                            orientation="v",
+                            yanchor="top",
+                            y=1,
+                            xanchor="left",
+                            x=1.02
+                        )
                     )
                     
                     st.plotly_chart(fig_div, use_container_width=True)
                     
-                    # Resumo
-                    col1, col2 = st.columns(2)
+                    # ========== TABELA DE DIVIDENDOS MENSAIS ==========
+                    st.write("### 📅 Tabela de Dividendos Mensais (R$)")
+                    
+                    # Formatar tabela
+                    df_div_display = df_dividendos.copy()
+                    df_div_display.index = df_div_display.index.strftime('%b/%Y')
+                    
+                    # Adicionar linha de total
+                    df_div_display.loc['TOTAL'] = df_div_display.sum()
+                    
+                    # Adicionar coluna de total por mês
+                    df_div_display['Total Mensal'] = df_div_display.sum(axis=1)
+                    
+                    st.dataframe(
+                        df_div_display.style.format('R$ {:.2f}').background_gradient(cmap='Greens', axis=None),
+                        use_container_width=True
+                    )
+                    
+                    # ========== RESUMO ESTATÍSTICO ==========
+                    st.write("### 📈 Resumo Estatístico de Dividendos")
+                    
+                    col1, col2, col3 = st.columns(3)
                     
                     with col1:
-                        st.write("**Total de Dividendos por Ativo**")
+                        st.write("**💰 Total de Dividendos por Ativo**")
                         div_totais = df_dividendos.sum().sort_values(ascending=False)
+                        df_totais = pd.DataFrame({
+                            'Ativo': div_totais.index,
+                            'Total (R$)': div_totais.values,
+                            '% do Total': (div_totais.values / div_totais.sum() * 100)
+                        })
                         st.dataframe(
-                            div_totais.to_frame('Total (R$)').style.format('R$ {:.2f}'),
-                            use_container_width=True
+                            df_totais.style.format({
+                                'Total (R$)': 'R$ {:.2f}',
+                                '% do Total': '{:.1f}%'
+                            }),
+                            use_container_width=True,
+                            hide_index=True
                         )
                     
                     with col2:
-                        st.write("**Dividend Yield Médio Mensal**")
+                        st.write("**📊 Dividendos Médios Mensais**")
+                        div_medios = df_dividendos.mean().sort_values(ascending=False)
+                        df_medios = pd.DataFrame({
+                            'Ativo': div_medios.index,
+                            'Média Mensal (R$)': div_medios.values,
+                            'Anualizado (R$)': div_medios.values * 12
+                        })
+                        st.dataframe(
+                            df_medios.style.format({
+                                'Média Mensal (R$)': 'R$ {:.2f}',
+                                'Anualizado (R$)': 'R$ {:.2f}'
+                            }),
+                            use_container_width=True,
+                            hide_index=True
+                        )
+                    
+                    with col3:
+                        st.write("**📈 Dividend Yield**")
                         dy_data = []
                         for ativo in df_dividendos.columns:
                             preco_medio = dados[ativo].mean()
-                            div_medio = df_dividendos[ativo].mean()
-                            dy = (div_medio / preco_medio) * 100 if preco_medio > 0 else 0
-                            dy_data.append({'Ativo': ativo, 'DY (%)': dy})
+                            div_total = df_dividendos[ativo].sum()
+                            div_anual = (div_total / len(df_dividendos)) * 12
+                            dy_mensal = (div_total / len(df_dividendos) / preco_medio) * 100 if preco_medio > 0 else 0
+                            dy_anual = (div_anual / preco_medio) * 100 if preco_medio > 0 else 0
+                            dy_data.append({
+                                'Ativo': ativo,
+                                'DY Mensal (%)': dy_mensal,
+                                'DY Anual (%)': dy_anual
+                            })
                         
-                        df_dy = pd.DataFrame(dy_data).set_index('Ativo').sort_values('DY (%)', ascending=False)
-                        st.dataframe(df_dy.style.format('{:.2f}%'), use_container_width=True)
+                        df_dy = pd.DataFrame(dy_data).sort_values('DY Anual (%)', ascending=False)
+                        st.dataframe(
+                            df_dy.style.format({
+                                'DY Mensal (%)': '{:.2f}%',
+                                'DY Anual (%)': '{:.2f}%'
+                            }),
+                            use_container_width=True,
+                            hide_index=True
+                        )
+                    
+                    # ========== MÉTRICAS GERAIS ==========
+                    st.write("### 🎯 Métricas Gerais de Dividendos")
+                    
+                    total_dividendos = df_dividendos.sum().sum()
+                    media_mensal = df_dividendos.sum(axis=1).mean()
+                    projecao_anual = media_mensal * 12
+                    meses_com_dividendos = (df_dividendos.sum(axis=1) > 0).sum()
+                    
+                    col1, col2, col3, col4 = st.columns(4)
+                    
+                    with col1:
+                        st.metric(
+                            "💰 Total Recebido",
+                            f"R$ {total_dividendos:,.2f}",
+                            help="Total de dividendos recebidos no período"
+                        )
+                    
+                    with col2:
+                        st.metric(
+                            "📅 Média Mensal",
+                            f"R$ {media_mensal:,.2f}",
+                            help="Média de dividendos por mês"
+                        )
+                    
+                    with col3:
+                        st.metric(
+                            "📈 Projeção Anual",
+                            f"R$ {projecao_anual:,.2f}",
+                            help="Projeção anual baseada na média mensal"
+                        )
+                    
+                    with col4:
+                        st.metric(
+                            "✅ Meses Pagantes",
+                            f"{meses_com_dividendos} de {len(df_dividendos)}",
+                            help="Meses que receberam dividendos"
+                        )
+                    
+                    # ========== GRÁFICO DE DIVIDENDOS ACUMULADOS ==========
+                    st.write("### 📈 Evolução dos Dividendos Acumulados")
+                    
+                    df_div_acum = df_dividendos.cumsum()
+                    
+                    fig_div_acum = go.Figure()
+                    
+                    for ativo in df_div_acum.columns:
+                        fig_div_acum.add_trace(go.Scatter(
+                            name=ativo,
+                            x=df_div_acum.index.strftime('%b/%Y'),
+                            y=df_div_acum[ativo],
+                            mode='lines+markers',
+                            line=dict(width=2),
+                            marker=dict(size=6),
+                            hovertemplate='<b>%{fullData.name}</b><br>Acumulado: R$ %{y:.2f}<extra></extra>'
+                        ))
+                    
+                    fig_div_acum.update_layout(
+                        title="Dividendos Acumulados ao Longo do Tempo",
+                        xaxis_title="Mês",
+                        yaxis_title="Dividendos Acumulados (R$)",
+                        height=450,
+                        hovermode='x unified',
+                        legend=dict(
+                            orientation="v",
+                            yanchor="top",
+                            y=1,
+                            xanchor="left",
+                            x=1.02
+                        )
+                    )
+                    
+                    st.plotly_chart(fig_div_acum, use_container_width=True)
+                    
+                    # ========== COMPARAÇÃO: DIVIDENDOS vs CARTEIRAS OTIMIZADAS ==========
+                    st.write("### ⚖️ Análise Comparativa: Estratégias de Investimento")
+                    
+                    st.info("""
+                    **📊 Comparação de Estratégias:**
+                    
+                    Vamos comparar três abordagens diferentes:
+                    1. **Foco em Dividendos**: Manter os ativos atuais priorizando renda passiva
+                    2. **Máximo Sharpe Ratio**: Otimizar para melhor relação retorno/risco
+                    3. **Mínima Volatilidade**: Otimizar para menor risco
+                    
+                    Esta análise será calculada após a otimização das carteiras abaixo.
+                    """)
+                    
+                    # Calcular carteira focada em dividendos (pesos proporcionais aos dividendos)
+                    div_totais_norm = df_dividendos.sum()
+                    if div_totais_norm.sum() > 0:
+                        pesos_dividendos = div_totais_norm / div_totais_norm.sum()
+                        
+                        # Criar DataFrame para comparação posterior
+                        df_estrategia_div = pd.DataFrame({
+                            'Ativo': pesos_dividendos.index,
+                            'Peso (%)': pesos_dividendos.values * 100,
+                            'Dividendos Anuais Estimados (R$)': (df_dividendos.sum() / len(df_dividendos) * 12).values
+                        })
+                        
+                        st.write("**💰 Carteira Focada em Dividendos (Pesos Proporcionais aos Dividendos)**")
+                        st.dataframe(
+                            df_estrategia_div.style.format({
+                                'Peso (%)': '{:.2f}%',
+                                'Dividendos Anuais Estimados (R$)': 'R$ {:.2f}'
+                            }),
+                            use_container_width=True,
+                            hide_index=True
+                        )
+                        
+                        # Calcular métricas da carteira de dividendos
+                        retornos_div = (retornos * pesos_dividendos.values).sum(axis=1)
+                        ret_div = retornos_div.mean() * 252
+                        vol_div = retornos_div.std() * np.sqrt(252)
+                        sharpe_div = (ret_div - taxa_livre_risco) / vol_div
+                        
+                        dividendos_anuais_estimados = (df_dividendos.sum().sum() / len(df_dividendos)) * 12
+                        
+                        col1, col2, col3, col4 = st.columns(4)
+                        
+                        with col1:
+                            st.metric("Retorno Anual", f"{ret_div*100:.2f}%")
+                        with col2:
+                            st.metric("Volatilidade", f"{vol_div*100:.2f}%")
+                        with col3:
+                            st.metric("Sharpe Ratio", f"{sharpe_div:.2f}")
+                        with col4:
+                            st.metric("Dividendos/Ano", f"R$ {dividendos_anuais_estimados:,.2f}")
+                        
+                        # Salvar para comparação posterior
+                        st.session_state['carteira_dividendos'] = {
+                            'pesos': pesos_dividendos.values,
+                            'retorno': ret_div,
+                            'volatilidade': vol_div,
+                            'sharpe': sharpe_div,
+                            'dividendos_anuais': dividendos_anuais_estimados,
+                            'df': df_estrategia_div
+                        }
                     
                 else:
-                    st.info("ℹ️ Nenhum dividendo encontrado no período.")
+                    st.info("ℹ️ Nenhum dividendo encontrado para os ativos selecionados no período analisado.")
+                    st.warning("""
+                    **Possíveis razões:**
+                    - Os ativos não pagaram dividendos no período
+                    - Dados de dividendos não disponíveis no Yahoo Finance
+                    - Período de análise muito curto
+                    """)
                     
             except Exception as e:
-                st.warning(f"⚠️ Erro ao coletar dividendos: {str(e)}")
+                st.warning(f"⚠️ Não foi possível coletar dados de dividendos: {str(e)}")
+                st.info("A análise continuará sem os dados de dividendos.")
+
     
     # Análise de Retornos
     st.markdown("---")
@@ -574,7 +790,186 @@ if st.button("🚀 Iniciar Análise e Otimização", type="primary", use_contain
         )])
         fig_pie_min.update_layout(title="Distribuição")
         st.plotly_chart(fig_pie_min, use_container_width=True)
+
     
+        # ========== COMPARAÇÃO FINAL DAS TRÊS ESTRATÉGIAS ==========
+    if incluir_dividendos and 'carteira_dividendos' in st.session_state:
+        st.markdown("---")
+        st.subheader("🎯 Comparação Final: Qual Estratégia é Melhor?")
+        
+        cart_div = st.session_state['carteira_dividendos']
+        
+        # Criar tabela comparativa
+        df_comparacao_estrategias = pd.DataFrame({
+            'Estratégia': [
+                '💰 Foco em Dividendos',
+                '🏆 Máximo Sharpe Ratio',
+                '🛡️ Mínima Volatilidade'
+            ],
+            'Retorno Anual (%)': [
+                cart_div['retorno'] * 100,
+                ret_sharpe * 100,
+                ret_min_vol * 100
+            ],
+            'Volatilidade (%)': [
+                cart_div['volatilidade'] * 100,
+                vol_sharpe * 100,
+                vol_min_vol * 100
+            ],
+            'Sharpe Ratio': [
+                cart_div['sharpe'],
+                sharpe_sharpe,
+                sharpe_min_vol
+            ],
+            'Dividendos Anuais (R$)': [
+                cart_div['dividendos_anuais'],
+                0,  # Será calculado
+                0   # Será calculado
+            ]
+        })
+        
+        # Calcular dividendos estimados para as carteiras otimizadas
+        if dividendos_data:
+            df_div_anual = (df_dividendos.sum() / len(df_dividendos)) * 12
+            
+            div_sharpe = (pesos_sharpe * df_div_anual.values).sum()
+            div_min_vol = (pesos_min_vol * df_div_anual.values).sum()
+            
+            df_comparacao_estrategias.loc[1, 'Dividendos Anuais (R$)'] = div_sharpe
+            df_comparacao_estrategias.loc[2, 'Dividendos Anuais (R$)'] = div_min_vol
+        
+        # Adicionar rendimento total (retorno + dividendos)
+        df_comparacao_estrategias['Rendimento Total (%)'] = (
+            df_comparacao_estrategias['Retorno Anual (%)'] + 
+            (df_comparacao_estrategias['Dividendos Anuais (R$)'] / capital_inicial * 100)
+        )
+        
+        st.write("### 📊 Tabela Comparativa das Estratégias")
+        st.dataframe(
+            df_comparacao_estrategias.style.format({
+                'Retorno Anual (%)': '{:.2f}%',
+                'Volatilidade (%)': '{:.2f}%',
+                'Sharpe Ratio': '{:.2f}',
+                'Dividendos Anuais (R$)': 'R$ {:.2f}',
+                'Rendimento Total (%)': '{:.2f}%'
+            }).background_gradient(subset=['Sharpe Ratio', 'Rendimento Total (%)'], cmap='RdYlGn'),
+            use_container_width=True,
+            hide_index=True
+        )
+        
+        # Gráfico de radar comparando as estratégias
+        st.write("### 🎯 Visualização Comparativa")
+        
+        fig_radar = go.Figure()
+        
+        categories = ['Retorno', 'Sharpe Ratio', 'Dividendos', 'Estabilidade']
+        
+        # Normalizar valores para 0-100
+        max_ret = df_comparacao_estrategias['Retorno Anual (%)'].max()
+        max_sharpe = df_comparacao_estrategias['Sharpe Ratio'].max()
+        max_div = df_comparacao_estrategias['Dividendos Anuais (R$)'].max()
+        min_vol = df_comparacao_estrategias['Volatilidade (%)'].min()
+        
+        for idx, row in df_comparacao_estrategias.iterrows():
+            values = [
+                (row['Retorno Anual (%)'] / max_ret * 100) if max_ret > 0 else 0,
+                (row['Sharpe Ratio'] / max_sharpe * 100) if max_sharpe > 0 else 0,
+                (row['Dividendos Anuais (R$)'] / max_div * 100) if max_div > 0 else 0,
+                (min_vol / row['Volatilidade (%)'] * 100) if row['Volatilidade (%)'] > 0 else 0
+            ]
+            
+            fig_radar.add_trace(go.Scatterpolar(
+                r=values + [values[0]],  # Fechar o polígono
+                theta=categories + [categories[0]],
+                fill='toself',
+                name=row['Estratégia']
+            ))
+        
+        fig_radar.update_layout(
+            polar=dict(
+                radialaxis=dict(
+                    visible=True,
+                    range=[0, 100]
+                )
+            ),
+            showlegend=True,
+            title="Comparação Normalizada das Estratégias (0-100)",
+            height=500
+        )
+        
+        st.plotly_chart(fig_radar, use_container_width=True)
+        
+        # Análise e recomendação
+        st.write("### 💡 Análise e Recomendação")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.write("**🎯 Melhor para cada objetivo:**")
+            
+            melhor_retorno = df_comparacao_estrategias.loc[df_comparacao_estrategias['Retorno Anual (%)'].idxmax(), 'Estratégia']
+            melhor_sharpe = df_comparacao_estrategias.loc[df_comparacao_estrategias['Sharpe Ratio'].idxmax(), 'Estratégia']
+            melhor_dividendos = df_comparacao_estrategias.loc[df_comparacao_estrategias['Dividendos Anuais (R$)'].idxmax(), 'Estratégia']
+            menor_risco = df_comparacao_estrategias.loc[df_comparacao_estrategias['Volatilidade (%)'].idxmin(), 'Estratégia']
+            melhor_total = df_comparacao_estrategias.loc[df_comparacao_estrategias['Rendimento Total (%)'].idxmax(), 'Estratégia']
+            
+            st.success(f"**📈 Maior Retorno:** {melhor_retorno}")
+            st.success(f"**⚡ Melhor Sharpe:** {melhor_sharpe}")
+            st.success(f"**💰 Mais Dividendos:** {melhor_dividendos}")
+            st.success(f"**🛡️ Menor Risco:** {menor_risco}")
+            st.success(f"**🏆 Melhor Rendimento Total:** {melhor_total}")
+        
+        with col2:
+            st.write("**📝 Perfis de Investidor:**")
+            
+            st.info("""
+            **Conservador:** 🛡️ Mínima Volatilidade
+            - Prioriza segurança e estabilidade
+            - Aceita retornos menores
+            
+            **Moderado:** 💰 Foco em Dividendos
+            - Busca renda passiva regular
+            - Equilíbrio entre risco e retorno
+            
+            **Agressivo:** 🏆 Máximo Sharpe
+            - Busca máxima eficiência
+            - Aceita mais volatilidade
+            """)
+        
+        # Simulação mensal comparativa
+        st.write("### 📅 Simulação de Renda Mensal")
+        
+        renda_mensal_div = cart_div['dividendos_anuais'] / 12
+        renda_mensal_sharpe = div_sharpe / 12 if 'div_sharpe' in locals() else 0
+        renda_mensal_min_vol = div_min_vol / 12 if 'div_min_vol' in locals() else 0
+        
+        df_renda_mensal = pd.DataFrame({
+            'Estratégia': [
+                '💰 Foco em Dividendos',
+                '🏆 Máximo Sharpe Ratio',
+                '🛡️ Mínima Volatilidade'
+            ],
+            'Renda Mensal (R$)': [
+                renda_mensal_div,
+                renda_mensal_sharpe,
+                renda_mensal_min_vol
+            ],
+            'Renda Anual (R$)': [
+                cart_div['dividendos_anuais'],
+                div_sharpe if 'div_sharpe' in locals() else 0,
+                div_min_vol if 'div_min_vol' in locals() else 0
+            ]
+        })
+        
+        st.dataframe(
+            df_renda_mensal.style.format({
+                'Renda Mensal (R$)': 'R$ {:.2f}',
+                'Renda Anual (R$)': 'R$ {:.2f}'
+            }).background_gradient(subset=['Renda Mensal (R$)'], cmap='Greens'),
+            use_container_width=True,
+            hide_index=True
+        )
+
     # Fronteira Eficiente
     st.markdown("---")
     st.subheader("📈 Fronteira Eficiente")
