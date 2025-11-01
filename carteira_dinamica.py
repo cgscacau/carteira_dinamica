@@ -1,3 +1,320 @@
+import streamlit as st
+import pandas as pd
+import numpy as np
+import yfinance as yf
+from scipy.optimize import minimize
+import plotly.graph_objects as go
+from datetime import datetime, timedelta
+import ativos_b3
+
+# ==================== CONFIGURAÇÃO ====================
+st.set_page_config(
+    page_title="Otimizador de Carteira - Markowitz",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="expanded"
+)
+
+# ==================== CSS ====================
+st.markdown("""
+<style>
+    .main-header {
+        font-size: 2.5rem;
+        font-weight: bold;
+        color: #1f77b4;
+        text-align: center;
+        margin-bottom: 1rem;
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# ==================== FUNÇÕES ====================
+
+def baixar_dados_ativos(tickers, data_inicio, data_fim):
+    """Baixa dados de múltiplos ativos"""
+    dados_dict = {}
+    sucessos = []
+    erros = []
+    
+    progress_bar = st.progress(0)
+    status = st.empty()
+    
+    for i, ticker in enumerate(tickers):
+        status.text(f"📥 Baixando {ticker}... ({i+1}/{len(tickers)})")
+        try:
+            ativo = yf.Ticker(ticker)
+            hist = ativo.history(start=data_inicio, end=data_fim)
+            
+            if not hist.empty and len(hist) >= 20:
+                dados_dict[ticker] = hist['Close']
+                sucessos.append(ticker)
+            else:
+                erros.append(ticker)
+        except:
+            erros.append(ticker)
+        
+        progress_bar.progress((i + 1) / len(tickers))
+    
+    progress_bar.empty()
+    status.empty()
+    
+    return dados_dict, sucessos, erros
+
+def baixar_dividendos(tickers, data_inicio, data_fim):
+    """Baixa dados de dividendos"""
+    dividendos_dict = {}
+    
+    for ticker in tickers:
+        try:
+            ativo = yf.Ticker(ticker)
+            divs = ativo.dividends
+            
+            if not divs.empty:
+                divs = divs[(divs.index >= pd.Timestamp(data_inicio)) & 
+                           (divs.index <= pd.Timestamp(data_fim))]
+                if not divs.empty:
+                    dividendos_dict[ticker] = divs
+        except:
+            pass
+    
+    return dividendos_dict
+
+def calcular_metricas_portfolio(pesos, retornos, matriz_cov, taxa_livre_risco):
+    """Calcula métricas de um portfolio"""
+    ret = np.sum(retornos * pesos) * 252
+    vol = np.sqrt(np.dot(pesos.T, np.dot(matriz_cov, pesos))) * np.sqrt(252)
+    sharpe = (ret - taxa_livre_risco) / vol if vol > 0 else 0
+    
+    return ret, vol, sharpe
+
+def otimizar_sharpe(retornos, matriz_cov, taxa_livre_risco):
+    """Otimiza para máximo Sharpe Ratio"""
+    num_ativos = len(retornos)
+    
+    def objetivo(pesos):
+        ret, vol, sharpe = calcular_metricas_portfolio(pesos, retornos, matriz_cov, taxa_livre_risco)
+        return -sharpe
+    
+    restricoes = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
+    limites = tuple((0, 1) for _ in range(num_ativos))
+    inicial = np.array([1/num_ativos] * num_ativos)
+    
+    resultado = minimize(objetivo, inicial, method='SLSQP', 
+                        bounds=limites, constraints=restricoes)
+    
+    return resultado.x
+
+def otimizar_minima_volatilidade(matriz_cov):
+    """Otimiza para mínima volatilidade"""
+    num_ativos = len(matriz_cov)
+    
+    def objetivo(pesos):
+        return np.sqrt(np.dot(pesos.T, np.dot(matriz_cov, pesos))) * np.sqrt(252)
+    
+    restricoes = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
+    limites = tuple((0, 1) for _ in range(num_ativos))
+    inicial = np.array([1/num_ativos] * num_ativos)
+    
+    resultado = minimize(objetivo, inicial, method='SLSQP',
+                        bounds=limites, constraints=restricoes)
+    
+    return resultado.x
+
+# ==================== INICIALIZAÇÃO ====================
+
+if 'ativos_finais' not in st.session_state:
+    st.session_state.ativos_finais = []
+
+# ==================== HEADER ====================
+
+st.markdown('<p class="main-header">📊 Otimizador de Carteira - Teoria de Markowitz</p>', 
+            unsafe_allow_html=True)
+
+# ==================== SIDEBAR ====================
+
+with st.sidebar:
+    st.title("⚙️ Configurações")
+    
+    st.divider()
+    
+    st.subheader("📅 Período")
+    data_inicio = st.date_input(
+        "De:",
+        value=datetime.now() - timedelta(days=365),
+        max_value=datetime.now()
+    )
+    data_fim = st.date_input(
+        "Até:",
+        value=datetime.now(),
+        max_value=datetime.now()
+    )
+    
+    st.divider()
+    
+    st.subheader("💰 Capital")
+    capital_inicial = st.number_input(
+        "Capital Inicial (R$)",
+        min_value=1000.0,
+        value=10000.0,
+        step=1000.0,
+        format="%.2f"
+    )
+    
+    st.divider()
+    
+    taxa_livre_risco = st.slider(
+        "Taxa Livre de Risco (%/ano)",
+        min_value=0.0,
+        max_value=20.0,
+        value=13.75,
+        step=0.25
+    ) / 100
+    
+    incluir_dividendos = st.checkbox("📈 Análise de Dividendos", value=True)
+
+# ==================== SELEÇÃO DE ATIVOS ====================
+
+st.header("🎯 Seleção de Ativos")
+
+tab1, tab2, tab3 = st.tabs(["📁 Por Segmento", "⭐ Populares", "✍️ Manual"])
+
+with tab1:
+    col1, col2 = st.columns([1, 2])
+    
+    with col1:
+        tipo_ativo = st.selectbox(
+            "Tipo de Ativo",
+            ["Ações", "FIIs", "ETFs", "BDRs"]
+        )
+        
+        tipo_map = {
+            "Ações": ativos_b3.ACOES_B3,
+            "FIIs": ativos_b3.FIIS,
+            "ETFs": ativos_b3.ETFS,
+            "BDRs": ativos_b3.BDRS
+        }
+        
+        dados_tipo = tipo_map[tipo_ativo]
+        
+        segmentos = st.multiselect(
+            "Segmentos",
+            options=list(dados_tipo.keys())
+        )
+    
+    with col2:
+        if segmentos:
+            ativos_disponiveis = []
+            for seg in segmentos:
+                ativos_disponiveis.extend(dados_tipo[seg])
+            ativos_disponiveis = sorted(list(set(ativos_disponiveis)))
+            
+            st.info(f"📊 {len(ativos_disponiveis)} ativos disponíveis")
+            
+            st.write("**Ativos disponíveis:**")
+            ativos_text = ", ".join(ativos_disponiveis)
+            st.text_area("", value=ativos_text, height=100, disabled=True, label_visibility="collapsed")
+            
+            col_a, col_b, col_c = st.columns(3)
+            
+            with col_a:
+                if st.button("✅ Todos", use_container_width=True):
+                    st.session_state.ativos_finais = ativos_disponiveis
+                    st.success(f"✅ {len(ativos_disponiveis)} ativos!")
+                    st.rerun()
+            
+            with col_b:
+                if st.button("🗑️ Limpar", use_container_width=True):
+                    st.session_state.ativos_finais = []
+                    st.rerun()
+            
+            with col_c:
+                if st.button("🎲 10 Aleat.", use_container_width=True):
+                    import random
+                    st.session_state.ativos_finais = random.sample(
+                        ativos_disponiveis, 
+                        min(10, len(ativos_disponiveis))
+                    )
+                    st.success(f"✅ {len(st.session_state.ativos_finais)} ativos!")
+                    st.rerun()
+        else:
+            st.info("👈 Selecione segmentos")
+
+with tab2:
+    populares = [
+        'PETR4.SA', 'VALE3.SA', 'ITUB4.SA', 'BBDC4.SA', 'WEGE3.SA',
+        'RENT3.SA', 'ABEV3.SA', 'B3SA3.SA', 'MGLU3.SA', 'RADL3.SA'
+    ]
+    
+    selected = st.multiselect(
+        "Ações Populares",
+        options=populares,
+        default=[]
+    )
+    
+    if selected:
+        st.session_state.ativos_finais = selected
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        if st.button("✅ Todos", key="todos_pop", use_container_width=True):
+            st.session_state.ativos_finais = populares
+            st.rerun()
+    
+    with col2:
+        if st.button("🗑️ Limpar", key="limpar_pop", use_container_width=True):
+            st.session_state.ativos_finais = []
+            st.rerun()
+
+with tab3:
+    st.info("💡 Formato: PETR4.SA (Brasil) ou AAPL (EUA)")
+    
+    manual_input = st.text_area(
+        "Digite os tickers",
+        height=100,
+        placeholder="PETR4.SA, VALE3.SA, ITUB4.SA"
+    )
+    
+    auto_sa = st.checkbox("Adicionar .SA automaticamente")
+    
+    if manual_input:
+        tickers = manual_input.replace(',', ' ').replace('\n', ' ').replace(';', ' ').split()
+        tickers = [t.strip().upper() for t in tickers if t.strip()]
+        
+        if auto_sa:
+            tickers = [t if '.' in t else f"{t}.SA" for t in tickers]
+        
+        tickers = list(set(tickers))
+        
+        st.session_state.ativos_finais = tickers
+        st.success(f"✅ {len(tickers)} ativos")
+
+# ==================== RESUMO ====================
+
+st.divider()
+
+ativos_finais = st.session_state.ativos_finais
+
+if ativos_finais:
+    col1, col2 = st.columns([1, 3])
+    
+    with col1:
+        st.metric("🎯 Total", len(ativos_finais))
+    
+    with col2:
+        with st.expander("📋 Ver Lista", expanded=False):
+            cols = st.columns(5)
+            for i, ativo in enumerate(sorted(ativos_finais)):
+                with cols[i % 5]:
+                    st.write(f"✓ {ativo}")
+else:
+    st.warning("⚠️ Selecione ativos para continuar")
+    st.stop()
+
+if data_inicio >= data_fim:
+    st.error("❌ Data inicial deve ser anterior à final!")
+    st.stop()
+
 # ==================== ANÁLISE ====================
 
 st.divider()
@@ -51,7 +368,6 @@ if st.button("🚀 INICIAR ANÁLISE COMPLETA", type="primary", use_container_wid
         ))
         
         fig_ret.update_layout(
-            title="Retorno Médio Diário dos Ativos",
             xaxis_title="Retorno (%)",
             yaxis_title="Ativo",
             height=400,
@@ -79,7 +395,6 @@ if st.button("🚀 INICIAR ANÁLISE COMPLETA", type="primary", use_container_wid
         ))
         
         fig_vol.update_layout(
-            title="Volatilidade Anualizada dos Ativos",
             xaxis_title="Volatilidade (%)",
             yaxis_title="Ativo",
             height=400,
@@ -106,7 +421,6 @@ if st.button("🚀 INICIAR ANÁLISE COMPLETA", type="primary", use_container_wid
     ))
     
     fig_corr.update_layout(
-        title="Matriz de Correlação entre Ativos",
         height=600,
         xaxis={'side': 'bottom'}
     )
@@ -116,7 +430,6 @@ if st.button("🚀 INICIAR ANÁLISE COMPLETA", type="primary", use_container_wid
     # ========== EVOLUÇÃO DOS PREÇOS ==========
     st.subheader("📈 Evolução Histórica dos Preços")
     
-    # Normalizar preços para base 100
     dados_norm = (dados / dados.iloc[0] * 100)
     
     fig_precos = go.Figure()
@@ -126,23 +439,14 @@ if st.button("🚀 INICIAR ANÁLISE COMPLETA", type="primary", use_container_wid
             x=dados_norm.index,
             y=dados_norm[ativo],
             mode='lines',
-            name=ativo,
-            hovertemplate='<b>%{fullData.name}</b><br>%{y:.2f}<extra></extra>'
+            name=ativo
         ))
     
     fig_precos.update_layout(
-        title="Evolução dos Preços (Base 100)",
         xaxis_title="Data",
         yaxis_title="Valor (Base 100)",
         height=500,
-        hovermode='x unified',
-        legend=dict(
-            orientation="v",
-            yanchor="top",
-            y=1,
-            xanchor="left",
-            x=1.02
-        )
+        hovermode='x unified'
     )
     
     st.plotly_chart(fig_precos, use_container_width=True)
@@ -165,23 +469,20 @@ if st.button("🚀 INICIAR ANÁLISE COMPLETA", type="primary", use_container_wid
     st.divider()
     st.header("🎯 Otimização de Carteira")
     
-    with st.spinner("🔄 Otimizando carteiras..."):
+    with st.spinner("🔄 Otimizando..."):
         retorno_esperado = retornos.mean()
         matriz_cov = retornos.cov()
         
-        # 1. Máximo Sharpe
         pesos_sharpe = otimizar_sharpe(retorno_esperado, matriz_cov, taxa_livre_risco)
         ret_sharpe, vol_sharpe, sharpe_sharpe = calcular_metricas_portfolio(
             pesos_sharpe, retorno_esperado, matriz_cov, taxa_livre_risco
         )
         
-        # 2. Mínima Volatilidade
         pesos_min_vol = otimizar_minima_volatilidade(matriz_cov)
         ret_min_vol, vol_min_vol, sharpe_min_vol = calcular_metricas_portfolio(
             pesos_min_vol, retorno_esperado, matriz_cov, taxa_livre_risco
         )
         
-        # 3. Foco em Dividendos
         pesos_div = None
         ret_div = vol_div = sharpe_div = 0
         
@@ -193,7 +494,7 @@ if st.button("🚀 INICIAR ANÁLISE COMPLETA", type="primary", use_container_wid
                     pesos_div, retorno_esperado, matriz_cov, taxa_livre_risco
                 )
     
-    # ========== COMPARAÇÃO DAS ESTRATÉGIAS ==========
+    # Comparação
     st.subheader("📊 Comparação das Estratégias")
     
     estrategias = []
@@ -201,7 +502,6 @@ if st.button("🚀 INICIAR ANÁLISE COMPLETA", type="primary", use_container_wid
     
     estrategias.append({
         'Nome': '🏆 Máximo Sharpe',
-        'Descrição': 'Melhor retorno ajustado ao risco',
         'Retorno': ret_sharpe * 100,
         'Volatilidade': vol_sharpe * 100,
         'Sharpe': sharpe_sharpe,
@@ -211,7 +511,6 @@ if st.button("🚀 INICIAR ANÁLISE COMPLETA", type="primary", use_container_wid
     
     estrategias.append({
         'Nome': '🛡️ Mínima Volatilidade',
-        'Descrição': 'Menor risco possível',
         'Retorno': ret_min_vol * 100,
         'Volatilidade': vol_min_vol * 100,
         'Sharpe': sharpe_min_vol,
@@ -222,7 +521,6 @@ if st.button("🚀 INICIAR ANÁLISE COMPLETA", type="primary", use_container_wid
     if pesos_div is not None:
         estrategias.append({
             'Nome': '💰 Foco Dividendos',
-            'Descrição': 'Máxima renda passiva',
             'Retorno': ret_div * 100,
             'Volatilidade': vol_div * 100,
             'Sharpe': sharpe_div,
@@ -230,217 +528,62 @@ if st.button("🚀 INICIAR ANÁLISE COMPLETA", type="primary", use_container_wid
             'Cor': cores[2]
         })
     
-    # Tabela Comparativa
+    # Tabela
     df_comp = pd.DataFrame([{
         'Estratégia': e['Nome'],
-        'Descrição': e['Descrição'],
-        'Retorno Anual': f"{e['Retorno']:.2f}%",
-        'Volatilidade': f"{e['Volatilidade']:.2f}%",
-        'Sharpe Ratio': f"{e['Sharpe']:.2f}"
+        'Retorno (%)': f"{e['Retorno']:.2f}%",
+        'Volatilidade (%)': f"{e['Volatilidade']:.2f}%",
+        'Sharpe': f"{e['Sharpe']:.2f}"
     } for e in estrategias])
     
     st.dataframe(df_comp, use_container_width=True, hide_index=True)
     
-    # ========== GRÁFICO COMPARATIVO DE MÉTRICAS ==========
-    st.subheader("📊 Comparação Visual das Métricas")
+    # Recomendação
+    melhor = max(estrategias, key=lambda x: x['Sharpe'])
     
-    fig_comp = go.Figure()
+    st.success(f"""
+    **🎖️ Melhor Estratégia:** {melhor['Nome']}
     
-    metricas = ['Retorno (%)', 'Sharpe Ratio', 'Volatilidade (%)']
+    - Sharpe: {melhor['Sharpe']:.2f}
+    - Retorno: {melhor['Retorno']:.2f}%
+    - Volatilidade: {melhor['Volatilidade']:.2f}%
+    """)
+    
+    # Detalhamento
+    st.divider()
+    st.header("📋 Detalhamento")
     
     for estrategia in estrategias:
-        fig_comp.add_trace(go.Bar(
-            name=estrategia['Nome'],
-            x=metricas,
-            y=[estrategia['Retorno'], estrategia['Sharpe'] * 10, estrategia['Volatilidade']],
-            marker_color=estrategia['Cor'],
-            text=[f"{estrategia['Retorno']:.2f}%", 
-                  f"{estrategia['Sharpe']:.2f}", 
-                  f"{estrategia['Volatilidade']:.2f}%"],
-            textposition='outside'
-        ))
-    
-    fig_comp.update_layout(
-        title="Comparação de Métricas (Sharpe x10 para visualização)",
-        xaxis_title="Métrica",
-        yaxis_title="Valor",
-        barmode='group',
-        height=400
-    )
-    
-    st.plotly_chart(fig_comp, use_container_width=True)
-    
-    # ========== RECOMENDAÇÃO ==========
-    st.subheader("🎖️ Melhor Estratégia por Critério")
-    
-    melhor_sharpe = max(estrategias, key=lambda x: x['Sharpe'])
-    menor_risco = min(estrategias, key=lambda x: x['Volatilidade'])
-    maior_retorno = max(estrategias, key=lambda x: x['Retorno'])
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.success(f"""
-        **🏆 Melhor Sharpe**
-        
-        {melhor_sharpe['Nome']}
-        
-        Sharpe: **{melhor_sharpe['Sharpe']:.2f}**
-        """)
-    
-    with col2:
-        st.info(f"""
-        **🛡️ Menor Risco**
-        
-        {menor_risco['Nome']}
-        
-        Vol: **{menor_risco['Volatilidade']:.2f}%**
-        """)
-    
-    with col3:
-        st.warning(f"""
-        **📈 Maior Retorno**
-        
-        {maior_retorno['Nome']}
-        
-        Ret: **{maior_retorno['Retorno']:.2f}%**
-        """)
-    
-    # ========== PERFIS DE INVESTIDOR ==========
-    st.subheader("👤 Recomendação por Perfil")
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.markdown(f"""
-        ### 🛡️ CONSERVADOR
-        
-        **Recomendação:** {menor_risco['Nome']}
-        
-        - Menor volatilidade
-        - Preservação de capital
-        - Risco minimizado
-        
-        **Métricas:**
-        - Retorno: {menor_risco['Retorno']:.2f}%
-        - Risco: {menor_risco['Volatilidade']:.2f}%
-        - Sharpe: {menor_risco['Sharpe']:.2f}
-        """)
-    
-    with col2:
-        st.markdown(f"""
-        ### ⚖️ MODERADO
-        
-        **Recomendação:** {melhor_sharpe['Nome']}
-        
-        - Melhor relação risco/retorno
-        - Eficiência otimizada
-        - Equilíbrio ideal
-        
-        **Métricas:**
-        - Retorno: {melhor_sharpe['Retorno']:.2f}%
-        - Risco: {melhor_sharpe['Volatilidade']:.2f}%
-        - Sharpe: {melhor_sharpe['Sharpe']:.2f}
-        """)
-    
-    with col3:
-        if pesos_div is not None:
-            estrategia_renda = [e for e in estrategias if '💰' in e['Nome']][0]
-            st.markdown(f"""
-            ### 💰 RENDA PASSIVA
+        with st.expander(f"{estrategia['Nome']}"):
+            df_alocacao = pd.DataFrame({
+                'Ativo': ativos_com_dados,
+                'Peso (%)': estrategia['Pesos'] * 100,
+                'Valor (R$)': estrategia['Pesos'] * capital_inicial
+            })
+            df_alocacao = df_alocacao[df_alocacao['Peso (%)'] > 0.5].sort_values('Peso (%)', ascending=False)
             
-            **Recomendação:** {estrategia_renda['Nome']}
+            st.dataframe(
+                df_alocacao.style.format({
+                    'Peso (%)': '{:.2f}%',
+                    'Valor (R$)': 'R$ {:.2f}'
+                }),
+                use_container_width=True,
+                hide_index=True
+            )
             
-            - Foco em dividendos
-            - Renda mensal regular
-            - Fluxo de caixa
-            
-            **Métricas:**
-            - Retorno: {estrategia_renda['Retorno']:.2f}%
-            - Risco: {estrategia_renda['Volatilidade']:.2f}%
-            - Sharpe: {estrategia_renda['Sharpe']:.2f}
-            """)
-        else:
-            st.markdown(f"""
-            ### 🚀 AGRESSIVO
-            
-            **Recomendação:** {maior_retorno['Nome']}
-            
-            - Máximo retorno
-            - Crescimento acelerado
-            - Aceita volatilidade
-            
-            **Métricas:**
-            - Retorno: {maior_retorno['Retorno']:.2f}%
-            - Risco: {maior_retorno['Volatilidade']:.2f}%
-            - Sharpe: {maior_retorno['Sharpe']:.2f}
-            """)
+            csv = df_alocacao.to_csv(index=False).encode('utf-8')
+            st.download_button(
+                f"📥 Download",
+                csv,
+                f"carteira_{datetime.now().strftime('%Y%m%d')}.csv",
+                "text/csv"
+            )
     
-    # ========== ALOCAÇÃO DAS CARTEIRAS ==========
+    # Fronteira Eficiente
     st.divider()
-    st.header("📋 Alocação das Carteiras")
+    st.header("📈 Fronteira Eficiente")
     
-    tabs = st.tabs([e['Nome'] for e in estrategias])
-    
-    for tab, estrategia in zip(tabs, estrategias):
-        with tab:
-            col1, col2 = st.columns([3, 2])
-            
-            with col1:
-                # Tabela de alocação
-                df_alocacao = pd.DataFrame({
-                    'Ativo': ativos_com_dados,
-                    'Peso (%)': estrategia['Pesos'] * 100,
-                    'Valor (R$)': estrategia['Pesos'] * capital_inicial
-                })
-                df_alocacao = df_alocacao[df_alocacao['Peso (%)'] > 0.5].sort_values('Peso (%)', ascending=False)
-                
-                st.dataframe(
-                    df_alocacao.style.format({
-                        'Peso (%)': '{:.2f}%',
-                        'Valor (R$)': 'R$ {:.2f}'
-                    }).background_gradient(subset=['Peso (%)'], cmap='Greens'),
-                    use_container_width=True,
-                    hide_index=True
-                )
-                
-                # Métricas
-                col_a, col_b, col_c, col_d = st.columns(4)
-                
-                with col_a:
-                    st.metric("📈 Retorno Anual", f"{estrategia['Retorno']:.2f}%")
-                with col_b:
-                    st.metric("📊 Volatilidade", f"{estrategia['Volatilidade']:.2f}%")
-                with col_c:
-                    st.metric("⚡ Sharpe", f"{estrategia['Sharpe']:.2f}")
-                with col_d:
-                    valor_final = capital_inicial * (1 + estrategia['Retorno'] / 100)
-                    st.metric("💰 Valor Final (1 ano)", f"R$ {valor_final:,.2f}")
-            
-            with col2:
-                # Gráfico de Pizza
-                fig_pie = go.Figure(data=[go.Pie(
-                    labels=df_alocacao['Ativo'],
-                    values=df_alocacao['Peso (%)'],
-                    hole=0.4,
-                    marker=dict(colors=[estrategia['Cor']] * len(df_alocacao)),
-                    textinfo='label+percent',
-                    textposition='auto'
-                )])
-                
-                fig_pie.update_layout(
-                    title=f"Distribuição - {estrategia['Nome']}",
-                    height=400,
-                    showlegend=False
-                )
-                
-                st.plotly_chart(fig_pie, use_container_width=True)
-    
-    # ========== FRONTEIRA EFICIENTE ==========
-    st.divider()
-    st.header("📈 Fronteira Eficiente de Markowitz")
-    
-    with st.spinner("Calculando fronteira eficiente..."):
+    with st.spinner("Calculando..."):
         n_portfolios = 5000
         resultados = np.zeros((3, n_portfolios))
         
@@ -458,7 +601,6 @@ if st.button("🚀 INICIAR ANÁLISE COMPLETA", type="primary", use_container_wid
     
     fig_front = go.Figure()
     
-    # Pontos simulados
     fig_front.add_trace(go.Scatter(
         x=resultados[1, :] * 100,
         y=resultados[0, :] * 100,
@@ -467,54 +609,31 @@ if st.button("🚀 INICIAR ANÁLISE COMPLETA", type="primary", use_container_wid
             size=5,
             color=resultados[2, :],
             colorscale='Viridis',
-            showscale=True,
-            colorbar=dict(title="Sharpe<br>Ratio")
+            showscale=True
         ),
-        name='Carteiras Possíveis',
-        hovertemplate='Vol: %{x:.2f}%<br>Ret: %{y:.2f}%<extra></extra>'
+        name='Carteiras'
     ))
     
-    # Carteiras ótimas
     for estrategia in estrategias:
         fig_front.add_trace(go.Scatter(
             x=[estrategia['Volatilidade']],
             y=[estrategia['Retorno']],
-            mode='markers+text',
-            marker=dict(
-                size=25,
-                color=estrategia['Cor'],
-                symbol='star',
-                line=dict(width=2, color='white')
-            ),
-            text=[estrategia['Nome']],
-            textposition='top center',
-            name=estrategia['Nome'],
-            hovertemplate=f"<b>{estrategia['Nome']}</b><br>" +
-                         f"Retorno: {estrategia['Retorno']:.2f}%<br>" +
-                         f"Volatilidade: {estrategia['Volatilidade']:.2f}%<br>" +
-                         f"Sharpe: {estrategia['Sharpe']:.2f}<extra></extra>"
+            mode='markers',
+            marker=dict(size=25, color=estrategia['Cor'], symbol='star'),
+            name=estrategia['Nome']
         ))
     
     fig_front.update_layout(
-        title="Fronteira Eficiente - Todas as Carteiras Possíveis",
-        xaxis_title="Volatilidade Anual (%)",
-        yaxis_title="Retorno Anual (%)",
-        height=700,
-        hovermode='closest',
-        showlegend=True,
-        legend=dict(
-            yanchor="top",
-            y=0.99,
-            xanchor="left",
-            x=0.01
-        )
+        xaxis_title="Volatilidade (%)",
+        yaxis_title="Retorno (%)",
+        height=600
     )
     
     st.plotly_chart(fig_front, use_container_width=True)
     
-    # ========== SIMULAÇÃO HISTÓRICA ==========
+    # Performance
     st.divider()
-    st.header("📊 Simulação de Performance Histórica")
+    st.header("📊 Performance Histórica")
     
     fig_perf = go.Figure()
     
@@ -527,219 +646,56 @@ if st.button("🚀 INICIAR ANÁLISE COMPLETA", type="primary", use_container_wid
             y=valor_estrategia.values,
             mode='lines',
             name=estrategia['Nome'],
-            line=dict(width=3, color=estrategia['Cor']),
-            hovertemplate='<b>%{fullData.name}</b><br>R$ %{y:,.2f}<extra></extra>'
+            line=dict(width=3, color=estrategia['Cor'])
         ))
     
-    # Linha de capital inicial
-    fig_perf.add_hline(
-        y=capital_inicial,
-        line_dash="dash",
-        line_color="gray",
-        annotation_text="Capital Inicial",
-        annotation_position="right"
-    )
-    
     fig_perf.update_layout(
-        title="Evolução do Valor da Carteira ao Longo do Tempo",
         xaxis_title="Data",
-        yaxis_title="Valor da Carteira (R$)",
+        yaxis_title="Valor (R$)",
         height=500,
-        hovermode='x unified',
-        legend=dict(
-            yanchor="top",
-            y=0.99,
-            xanchor="left",
-            x=0.01
-        )
+        hovermode='x unified'
     )
     
     st.plotly_chart(fig_perf, use_container_width=True)
     
-    # Estatísticas da simulação
-    st.subheader("📊 Estatísticas da Simulação")
-    
-    cols = st.columns(len(estrategias))
-    
-    for col, estrategia in zip(cols, estrategias):
-        with col:
-            retornos_estrategia = (retornos * estrategia['Pesos']).sum(axis=1)
-            valor_estrategia = capital_inicial * (1 + retornos_estrategia).cumprod()
-            
-            valor_final = valor_estrategia.iloc[-1]
-            retorno_total = ((valor_final / capital_inicial) - 1) * 100
-            max_drawdown = ((valor_estrategia / valor_estrategia.cummax()) - 1).min() * 100
-            
-            st.markdown(f"""
-            **{estrategia['Nome']}**
-            
-            - Valor Final: R$ {valor_final:,.2f}
-            - Retorno Total: {retorno_total:.2f}%
-            - Max Drawdown: {max_drawdown:.2f}%
-            """)
-    
-    # ========== ANÁLISE DE DIVIDENDOS ==========
+    # Dividendos
     if df_dividendos is not None and not df_dividendos.empty:
         st.divider()
-        st.header("💰 Análise Detalhada de Dividendos")
+        st.header("💰 Análise de Dividendos")
         
-        # Gráfico de barras empilhadas
         fig_div = go.Figure()
         
         for ativo in df_dividendos.columns:
             fig_div.add_trace(go.Bar(
                 name=ativo,
                 x=df_dividendos.index.strftime('%b/%y'),
-                y=df_dividendos[ativo],
-                hovertemplate='<b>%{fullData.name}</b><br>R$ %{y:.2f}<extra></extra>'
+                y=df_dividendos[ativo]
             ))
         
         fig_div.update_layout(
-            title="Distribuição Mensal de Dividendos por Ativo",
             xaxis_title="Mês",
-            yaxis_title="Dividendos (R$)",
+            yaxis_title="R$",
             barmode='stack',
-            height=500,
-            hovermode='x unified'
+            height=400
         )
         
         st.plotly_chart(fig_div, use_container_width=True)
         
-        # Gráfico de dividendos acumulados
-        df_div_acum = df_dividendos.cumsum()
-        
-        fig_div_acum = go.Figure()
-        
-        for ativo in df_div_acum.columns:
-            fig_div_acum.add_trace(go.Scatter(
-                name=ativo,
-                x=df_div_acum.index.strftime('%b/%y'),
-                y=df_div_acum[ativo],
-                mode='lines+markers',
-                line=dict(width=2),
-                marker=dict(size=6),
-                hovertemplate='<b>%{fullData.name}</b><br>Acumulado: R$ %{y:.2f}<extra></extra>'
-            ))
-        
-        fig_div_acum.update_layout(
-            title="Evolução dos Dividendos Acumulados",
-            xaxis_title="Mês",
-            yaxis_title="Dividendos Acumulados (R$)",
-            height=450,
-            hovermode='x unified'
-        )
-        
-        st.plotly_chart(fig_div_acum, use_container_width=True)
-        
-        # Métricas de dividendos
-        st.subheader("📊 Métricas de Dividendos")
-        
         total = df_dividendos.sum().sum()
         media = df_dividendos.sum(axis=1).mean()
-        projecao = media * 12
-        meses_pagantes = (df_dividendos.sum(axis=1) > 0).sum()
         
-        col1, col2, col3, col4 = st.columns(4)
-        
+        col1, col2, col3 = st.columns(3)
         with col1:
-            st.metric("💰 Total Recebido", f"R$ {total:,.2f}")
+            st.metric("💰 Total", f"R$ {total:,.2f}")
         with col2:
             st.metric("📅 Média Mensal", f"R$ {media:,.2f}")
         with col3:
-            st.metric("📈 Projeção Anual", f"R$ {projecao:,.2f}")
-        with col4:
-            st.metric("✅ Meses Pagantes", f"{meses_pagantes}/{len(df_dividendos)}")
-        
-        # Ranking de dividendos
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.subheader("🏆 Ranking de Dividendos")
-            div_total = df_dividendos.sum().sort_values(ascending=False)
-            
-            fig_rank = go.Figure(go.Bar(
-                x=div_total.values,
-                y=div_total.index,
-                orientation='h',
-                marker=dict(color='gold'),
-                text=div_total.apply(lambda x: f'R$ {x:.2f}'),
-                textposition='outside'
-            ))
-            
-            fig_rank.update_layout(
-                title="Total de Dividendos por Ativo",
-                xaxis_title="Dividendos (R$)",
-                yaxis_title="Ativo",
-                height=400
-            )
-            
-            st.plotly_chart(fig_rank, use_container_width=True)
-        
-        with col2:
-            st.subheader("📊 Dividend Yield")
-            
-            dy_data = []
-            for ativo in df_dividendos.columns:
-                preco_medio = dados[ativo].mean()
-                div_anual = (df_dividendos[ativo].sum() / len(df_dividendos)) * 12
-                dy = (div_anual / preco_medio) * 100 if preco_medio > 0 else 0
-                dy_data.append({'Ativo': ativo, 'DY': dy})
-            
-            df_dy = pd.DataFrame(dy_data).sort_values('DY', ascending=False)
-            
-            fig_dy = go.Figure(go.Bar(
-                x=df_dy['DY'],
-                y=df_dy['Ativo'],
-                orientation='h',
-                marker=dict(color='lightgreen'),
-                text=df_dy['DY'].apply(lambda x: f'{x:.2f}%'),
-                textposition='outside'
-            ))
-            
-            fig_dy.update_layout(
-                title="Dividend Yield Anualizado",
-                xaxis_title="DY (%)",
-                yaxis_title="Ativo",
-                height=400
-            )
-            
-            st.plotly_chart(fig_dy, use_container_width=True)
-    
-    # ========== DOWNLOAD DOS RESULTADOS ==========
-    st.divider()
-    st.header("💾 Exportar Resultados")
-    
-    cols = st.columns(len(estrategias))
-    
-    for col, estrategia in zip(cols, estrategias):
-        with col:
-            df_export = pd.DataFrame({
-                'Ativo': ativos_com_dados,
-                'Peso (%)': estrategia['Pesos'] * 100,
-                'Valor (R$)': estrategia['Pesos'] * capital_inicial
-            })
-            df_export = df_export[df_export['Peso (%)'] > 0.01].sort_values('Peso (%)', ascending=False)
-            
-            csv = df_export.to_csv(index=False).encode('utf-8')
-            nome = estrategia['Nome'].replace('🏆 ', '').replace('🛡️ ', '').replace('💰 ', '')
-            nome = nome.replace(' ', '_').lower()
-            
-            st.download_button(
-                label=f"📥 {estrategia['Nome']}",
-                data=csv,
-                file_name=f"{nome}_{datetime.now().strftime('%Y%m%d')}.csv",
-                mime="text/csv",
-                use_container_width=True
-            )
+            st.metric("📈 Projeção Anual", f"R$ {media * 12:,.2f}")
 
-# ==================== RODAPÉ ==========
 st.divider()
 st.markdown("""
-<div style='text-align: center; padding: 2rem; color: #666;'>
-    <p style='font-size: 1rem;'>
-        📊 <b>Otimizador de Carteira - Teoria Moderna de Portfólio (Markowitz)</b><br>
-        Dados: Yahoo Finance | Desenvolvido com Streamlit<br>
-        ⚠️ Apenas para fins educacionais - Não constitui recomendação de investimento
-    </p>
+<div style='text-align: center; color: #666;'>
+    <p>📊 Otimizador de Carteira - Markowitz<br>
+    ⚠️ Apenas para fins educacionais</p>
 </div>
 """, unsafe_allow_html=True)
