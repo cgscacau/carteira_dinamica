@@ -4,210 +4,605 @@ import numpy as np
 import yfinance as yf
 from scipy.optimize import minimize
 import plotly.graph_objects as go
-import calendar
-import io
+from datetime import datetime, timedelta
 
-# --- Configuração da Página ---
-st.set_page_config(page_title="Otimizador de Carteira Inteligente", page_icon="💰", layout="wide")
+# Configuração da página
+st.set_page_config(
+    page_title="Otimização de Carteira Dinâmica",
+    page_icon="📈",
+    layout="wide"
+)
 
-# --- Funções de Busca e Otimização (sem alterações) ---
-@st.cache_data(ttl=3600 * 4)
-def buscar_indicadores_yfinance(tickers_sa):
-    dados = []
-    progress_bar = st.progress(0, text="Buscando indicadores fundamentalistas...")
-    setor_map = {'Financial Services':'Financeiro','Utilities':'Elétrico/Saneamento','Basic Materials':'Materiais Básicos','Energy':'Energia','Consumer Cyclical':'Consumo Cíclico','Industrials':'Industrial','Real Estate':'Imobiliário','Communication Services':'Telecomunicações','Consumer Defensive':'Consumo Defensivo'}
-    for i, ticker_str in enumerate(tickers_sa):
-        try:
-            ticker = yf.Ticker(ticker_str)
-            info = ticker.info
-            preco_atual = info.get('currentPrice', info.get('previousClose'))
-            if not preco_atual or preco_atual == 0: continue
-            divs_12m = ticker.dividends.last('365D').sum()
-            dy = (divs_12m / preco_atual) if preco_atual > 0 else 0
-            progress_bar.progress((i + 1) / len(tickers_sa), text=f"Buscando: {ticker_str}")
-            if dy > 0:
-                setor_br = setor_map.get(info.get('sector'), info.get('sector', 'N/A'))
-                dados.append({'Ticker_yf': ticker_str, 'Ticker': ticker_str.replace('.SA', ''), 'Setor': setor_br, 'DY_Medio': dy, 'Preco_Atual': preco_atual})
-        except Exception: pass
-    progress_bar.empty()
-    if not dados: return pd.DataFrame()
-    return pd.DataFrame(dados).sort_values(by='DY_Medio', ascending=False).reset_index(drop=True)
+# Título
+st.title("📈 Otimização de Carteira de Investimentos")
+st.markdown("---")
 
-def obter_lista_base_tickers():
-    return ['PETR4','VALE3','BBAS3','GGBR4','BBDC4','ITSA4','CMIG4','CSNA3','BBSE3','CPLE6','TAEE11','ALUP11','SANB11','SAPR11','TRPL4','EGIE3','CSMG3','VIVT3','ABEV3','KLBN11','SUZB3','BEEF3','BRAP4','ELET3','SBSP3','AESB3','UNIP6','BRSR6','WIZC3','VBBR3','CPFE3','AURE3','ABCB4','CYRE3','DIRR3','LAVV3','MELK3','MTRE3','PLPL3','JHSF3','GOAU4','USIM5','CMIN3','PSSA3','TUPY3','KEPL3','ROMI3']
+# Sidebar com informações
+with st.sidebar:
+    st.header("⚙️ Configurações")
+    
+    # Período de análise
+    st.subheader("Período de Análise")
+    data_inicio = st.date_input(
+        "Data Inicial",
+        value=datetime.now() - timedelta(days=365),
+        max_value=datetime.now()
+    )
+    data_fim = st.date_input(
+        "Data Final",
+        value=datetime.now(),
+        max_value=datetime.now()
+    )
+    
+    # Capital inicial
+    st.subheader("Capital")
+    capital_inicial = st.number_input(
+        "Capital Inicial (R$)",
+        min_value=100.0,
+        value=10000.0,
+        step=100.0,
+        format="%.2f"
+    )
+    
+    # Taxa livre de risco
+    taxa_livre_risco = st.number_input(
+        "Taxa Livre de Risco Anual (%)",
+        min_value=0.0,
+        value=13.75,
+        step=0.25,
+        format="%.2f"
+    ) / 100
 
-@st.cache_data
-def obter_dados_historicos(tickers, period='5y'):
-    dados, validos = [], []
-    for t in tickers:
-        try:
-            ativo=yf.Ticker(t); hist=ativo.history(period=period,auto_adjust=True)
-            if len(hist)<252: continue
-            dados.append(hist['Close'].rename(t)); validos.append(t)
-        except Exception: pass
-    if not dados: return pd.DataFrame(), []
-    return pd.concat(dados, axis=1).dropna(axis=0, how='all'), validos
+# Seção de seleção de ativos
+st.subheader("📊 Seleção de Ativos")
 
-@st.cache_data
-def obter_dividendos_historicos(tickers, period='5y'):
-    hist = {}
-    for t in tickers:
-        try:
-            ativo=yf.Ticker(t); divs=ativo.dividends
-            if not divs.empty:
-                divs.index=divs.index.tz_localize(None)
-                hist[t]=divs[divs.index >= pd.Timestamp.now()-pd.DateOffset(years=int(period[0]))]
-        except Exception: pass
-    return hist
+# Lista de ativos pré-definidos para busca rápida
+ativos_populares = [
+    'PETR4.SA', 'VALE3.SA', 'ITUB4.SA', 'BBDC4.SA', 'ABEV3.SA',
+    'WEGE3.SA', 'RENT3.SA', 'MGLU3.SA', 'B3SA3.SA', 'SUZB3.SA',
+    'BBAS3.SA', 'SANB11.SA', 'EGIE3.SA', 'CPLE6.SA', 'VIVT3.SA',
+    'RADL3.SA', 'RAIL3.SA', 'EMBR3.SA', 'CSNA3.SA', 'USIM5.SA'
+]
 
-def calcular_portfolio_otimizado(ret_esp, mat_cov):
-    n=len(ret_esp)
-    def neg_sharpe(w,r,c): p_r=np.sum(r*w); p_v=np.sqrt(np.dot(w.T,np.dot(c,w))); return -p_r/p_v if p_v!=0 else 0
-    cons=({'type':'eq','fun':lambda x:np.sum(x)-1}); bnds=tuple((0,1) for _ in range(n))
-    res=minimize(neg_sharpe,n*[1./n,],args=(ret_esp,mat_cov),method='SLSQP',bounds=bnds,constraints=cons)
-    return res.x
+# Criar abas para diferentes métodos de seleção
+tab1, tab2 = st.tabs(["🔍 Buscar Ativos", "✏️ Adicionar Manualmente"])
 
-@st.cache_data
-def calcular_perfis_sazonais_individuais(tickers, dividendos_hist, period='5y'):
-    perfis = {}
-    num_anos = int(period[0])
-    for ticker in tickers:
-        perfil_mensal = np.zeros(12)
-        if ticker in dividendos_hist and not dividendos_hist[ticker].empty:
-            divs = dividendos_hist[ticker]
-            media_mensal = divs.groupby(divs.index.month).sum() / num_anos
-            for mes, valor in media_mensal.items():
-                perfil_mensal[mes - 1] = valor
-        perfis[ticker] = perfil_mensal
-    return perfis
+ativos_selecionados_busca = []
+ativos_manuais = []
 
-def otimizar_por_regularidade_dividendos(df_ativos, perfis_sazonais, valor_total_investir):
-    tickers = df_ativos['Ticker_yf'].tolist()
-    precos = df_ativos['Preco_Atual'].values
-    n = len(tickers)
-    def objetivo_regularidade(weights):
-        qtd_acoes = (weights * valor_total_investir) / precos
-        projecao_total = np.zeros(12)
-        for i, ticker in enumerate(tickers):
-            projecao_total += perfis_sazonais[ticker] * qtd_acoes[i]
-        return np.std(projecao_total)
-    cons=({'type':'eq','fun':lambda x:np.sum(x)-1}); bnds=tuple((0,1) for _ in range(n))
-    res=minimize(objetivo_regularidade,n*[1./n,], method='SLSQP', bounds=bnds, constraints=cons)
-    return res.x
+with tab1:
+    st.write("Selecione ativos da lista de ações populares da B3:")
+    ativos_selecionados_busca = st.multiselect(
+        "Ativos disponíveis:",
+        options=sorted(ativos_populares),
+        default=['PETR4.SA', 'VALE3.SA', 'ITUB4.SA', 'BBDC4.SA'],
+        help="Selecione os ativos que deseja incluir na análise"
+    )
 
-def gerar_fronteira_eficiente(ret_esp, mat_cov, n=2000):
-    num=len(ret_esp); res=np.zeros((3,n))
-    for i in range(n):
-        p=np.random.random(num); p/=np.sum(p)
-        r,v=np.sum(ret_esp*p),np.sqrt(np.dot(p.T,np.dot(mat_cov,p)))
-        res[0,i],res[1,i],res[2,i]=v,r,r/v
-    return pd.DataFrame(res.T, columns=['Volatilidade','Retorno','SharpeRatio'])
-
-def calcular_projecao_sazonal(df_carteira, perfis_individuais):
-    proj={i:0 for i in range(1,13)}
-    for ticker_yf, row in df_carteira.iterrows():
-        qtd_acoes = row['Qtd_Acoes']
-        perfil_ativo = perfis_individuais.get(ticker_yf, np.zeros(12))
-        projecao_ativo = perfil_ativo * qtd_acoes
-        for i in range(12):
-            proj[i+1] += projecao_ativo[i]
+with tab2:
+    st.write("Adicione ativos manualmente digitando os tickers:")
+    
+    col1, col2 = st.columns([3, 1])
+    
+    with col1:
+        st.info("💡 **Dica:** Para ações brasileiras, adicione '.SA' ao final (ex: PETR4.SA). Para ações americanas, use apenas o ticker (ex: AAPL, MSFT)")
+    
+    with col2:
+        adicionar_sufixo = st.checkbox(
+            "Auto .SA",
+            value=False,
+            help="Adicionar '.SA' automaticamente"
+        )
+    
+    # Campo para adicionar múltiplos ativos
+    ativos_manuais_input = st.text_area(
+        "Digite os tickers (separados por vírgula, espaço ou quebra de linha):",
+        placeholder="Exemplo:\nPETR4.SA, VALE3.SA, ITUB4.SA\n\nou\n\nAAPL\nMSFT\nGOOGL",
+        height=120,
+        help="Você pode digitar múltiplos ativos separados por vírgula, espaço ou quebra de linha"
+    )
+    
+    # Processar ativos manuais
+    if ativos_manuais_input:
+        # Substituir vírgulas e quebras de linha por espaços e dividir
+        ativos_temp = ativos_manuais_input.replace(',', ' ').replace('\n', ' ').split()
+        # Limpar espaços extras e converter para maiúsculas
+        ativos_manuais = [ativo.strip().upper() for ativo in ativos_temp if ativo.strip()]
+        
+        # Adicionar sufixo se solicitado
+        if adicionar_sufixo:
+            ativos_manuais = [
+                ativo if '.SA' in ativo.upper() or '.' in ativo else f"{ativo}.SA" 
+                for ativo in ativos_manuais
+            ]
+        
+        # Remover duplicatas
+        ativos_manuais = list(set(ativos_manuais))
+        
+        if ativos_manuais:
+            st.success(f"✅ {len(ativos_manuais)} ativo(s) adicionado(s): {', '.join(ativos_manuais)}")
             
-    meses={i:n for i,n in enumerate(calendar.month_name) if i>0}
-    df=pd.DataFrame(list(proj.items()),columns=['Mês_Num','Dividendo Projetado (R$)'])
-    df['Mês']=df['Mês_Num'].map(meses); return df[['Mês','Dividendo Projetado (R$)']]
+            # Validar ativos
+            if st.checkbox("🔍 Validar ativos antes de usar", value=True):
+                with st.spinner("Validando ativos..."):
+                    ativos_validos = []
+                    ativos_invalidos = []
+                    
+                    progress_bar = st.progress(0)
+                    status_text = st.empty()
+                    
+                    for i, ativo in enumerate(ativos_manuais):
+                        status_text.text(f"Validando {ativo}...")
+                        try:
+                            ticker = yf.Ticker(ativo)
+                            # Tentar obter dados recentes
+                            hist = ticker.history(period="5d")
+                            if not hist.empty and len(hist) > 0:
+                                ativos_validos.append(ativo)
+                            else:
+                                ativos_invalidos.append(ativo)
+                        except Exception as e:
+                            ativos_invalidos.append(ativo)
+                        
+                        progress_bar.progress((i + 1) / len(ativos_manuais))
+                    
+                    progress_bar.empty()
+                    status_text.empty()
+                    
+                    if ativos_validos:
+                        st.success(f"✅ Ativos válidos ({len(ativos_validos)}): {', '.join(ativos_validos)}")
+                    
+                    if ativos_invalidos:
+                        st.error(f"❌ Ativos inválidos ou sem dados ({len(ativos_invalidos)}): {', '.join(ativos_invalidos)}")
+                        st.warning("⚠️ Os ativos inválidos serão removidos da análise.")
+                    
+                    # Atualizar lista com apenas ativos válidos
+                    ativos_manuais = ativos_validos
 
-# --- Fluxo Principal da Aplicação ---
-st.title("💰 Otimizador de Carteira Inteligente")
-st.markdown("Defina seus objetivos: **retorno ajustado ao risco (Markowitz)**, **fluxo de caixa mensal (Regularidade)** ou **simples diversificação (Igualitária)**.")
+# Combinar ativos de ambas as fontes e remover duplicatas
+ativos_finais = list(set(ativos_selecionados_busca + ativos_manuais))
 
-df_base = buscar_indicadores_yfinance([t+'.SA' for t in obter_lista_base_tickers()])
-if df_base.empty: st.error("Não foi possível carregar os indicadores. Tente recarregar a página."); st.stop()
+# Mostrar resumo final
+st.markdown("---")
+col1, col2, col3 = st.columns(3)
+with col1:
+    st.metric("Ativos da Busca", len(ativos_selecionados_busca))
+with col2:
+    st.metric("Ativos Manuais", len(ativos_manuais))
+with col3:
+    st.metric("Total de Ativos", len(ativos_finais))
 
-setores_disponiveis = sorted(df_base['Setor'].unique())
-
-with st.sidebar.form(key='parametros_form'):
-    st.header("🔹 Filtros e Objetivos")
-    valor_total_investir = st.number_input("Valor Total a Investir (R$)", min_value=1000.0, value=100000.0, step=1000.0, format="%.2f")
-    num_ativos_considerar = st.slider("Universo de análise ('Top N' pagadoras de DY)", 10, len(df_base), 30, 5)
-    sugestao_papeis = max(5, min(30, int(valor_total_investir / 7500)))
-    num_papeis_carteira = st.slider("Número de ativos na carteira final", 2, num_ativos_considerar, sugestao_papeis, 1)
-    setores_selecionados = st.multiselect("Setores Desejados", options=setores_disponiveis, default=setores_disponiveis)
-    tipo_distribuicao = st.radio("Selecione o Objetivo da Otimização:", ('⚙️ Risco x Retorno (Markowitz)', '🗓️ Regularidade de Dividendos', '📊 Distribuição Igualitária'))
-    analisar_button = st.form_submit_button(label="🚀 Analisar e Otimizar Carteira")
-
-df_ativos_filtrados = df_base[df_base['Setor'].isin(setores_selecionados)].head(num_ativos_considerar)
-
-if analisar_button:
-    if df_ativos_filtrados.empty: st.error("Nenhum ativo encontrado."); st.stop()
-    
-    with st.spinner("Buscando dados históricos..."):
-        precos_hist, tickers_validos = obter_dados_historicos(df_ativos_filtrados['Ticker_yf'].tolist())
-    if precos_hist.empty or len(tickers_validos) < 2: st.error("Não foi possível obter dados históricos para 2 ou mais ativos."); st.stop()
-        
-    df_para_otimizar = df_ativos_filtrados[df_ativos_filtrados['Ticker_yf'].isin(tickers_validos)].set_index('Ticker_yf')
-    
-    dividendos_hist_completo = obter_dividendos_historicos(tickers_validos)
-    perfis_sazonais = calcular_perfis_sazonais_individuais(tickers_validos, dividendos_hist_completo)
-
-    if tipo_distribuicao == '⚙️ Risco x Retorno (Markowitz)':
-        matriz_cov = precos_hist.pct_change().dropna().cov()*252; ret_esp = df_para_otimizar['DY_Medio'].reindex(matriz_cov.columns)
-        with st.spinner("Otimizando por Markowitz..."): pesos_otimizados = calcular_portfolio_otimizado(ret_esp, matriz_cov)
-        df_otimizado = pd.DataFrame({'Ticker_yf': ret_esp.index, 'Peso': pesos_otimizados})
-    elif tipo_distribuicao == '🗓️ Regularidade de Dividendos':
-        with st.spinner("Otimizando para regularidade..."):
-            pesos_otimizados = otimizar_por_regularidade_dividendos(df_para_otimizar.reset_index(), perfis_sazonais, valor_total_investir)
-        df_otimizado = pd.DataFrame({'Ticker_yf': df_para_otimizar.index, 'Peso': pesos_otimizados})
-    else:
-        df_otimizado = pd.DataFrame({'Ticker_yf': df_para_otimizar.index, 'Peso': 1/len(df_para_otimizar)})
-
-    df_selecionado = df_otimizado.sort_values(by='Peso', ascending=False).head(num_papeis_carteira)
-    df_selecionado['Peso'] = df_selecionado['Peso'] / df_selecionado['Peso'].sum()
-
-    df_carteira = pd.merge(df_selecionado, df_base, on='Ticker_yf').set_index('Ticker_yf')
-    precos_finais = precos_hist[df_carteira.index].iloc[-1]; df_carteira['Preco_Atual'] = precos_finais
-    df_carteira['Valor_Alocado'] = df_carteira['Peso']*valor_total_investir; df_carteira['Qtd_Acoes'] = (df_carteira['Valor_Alocado']/df_carteira['Preco_Atual']).astype(int)
-    
-    pesos_finais=df_carteira['Peso'].values; retornos_finais=df_carteira['DY_Medio'].values
-    matriz_cov_final = precos_hist[df_carteira.index].pct_change().dropna().cov() * 252
-    ret_carteira_final, vol_carteira_final = np.sum(retornos_finais*pesos_finais), np.sqrt(np.dot(pesos_finais.T,np.dot(matriz_cov_final.values,pesos_finais)))
-
-    df_projecao = calcular_projecao_sazonal(df_carteira, perfis_sazonais)
-    dividendo_total_anual_projetado = df_projecao['Dividendo Projetado (R$)'].sum()
-
-    st.header("✅ Carteira Otimizada"); col1,col2,col3 = st.columns(3)
-    col1.metric("Yield Anual da Carteira", f"{ret_carteira_final*100:.2f}%")
-    col2.metric("Dividendos Anuais Projetados", f"R$ {dividendo_total_anual_projetado:,.2f}")
-    col3.metric("Volatilidade Anual da Carteira", f"{vol_carteira_final*100:.2f}%")
-    st.dataframe(df_carteira[['Ticker', 'Setor', 'Peso', 'DY_Medio', 'Preco_Atual', 'Qtd_Acoes', 'Valor_Alocado']].sort_values(by='Peso',ascending=False).style.format({'Peso':'{:.2%}','DY_Medio':'{:.2%}','Preco_Atual':'R$ {:,.2f}','Valor_Alocado':'R$ {:,.2f}'}))
-    
-    # --- NOVO HEATMAP DE DIVIDENDOS ---
-    st.markdown("---")
-    st.header("🔥 Heatmap de Pagamento de Dividendos por Ativo")
-    
-    projecao_por_ativo = {}
-    for ticker_yf, row in df_carteira.iterrows():
-        perfil_ativo = perfis_sazonais.get(ticker_yf, np.zeros(12))
-        projecao_por_ativo[row['Ticker']] = perfil_ativo * row['Qtd_Acoes']
-        
-    df_heatmap = pd.DataFrame.from_dict(projecao_por_ativo, orient='index')
-    df_heatmap.columns = list(calendar.month_name)[1:]
-    
-    st.dataframe(df_heatmap.style.background_gradient(cmap='Greens', axis=1).format('R$ {:,.2f}'))
-    st.caption("A tabela mostra o valor projetado de dividendos que cada ação da sua carteira pagará por mês. As cores mais intensas indicam os meses de maior probabilidade de pagamento para cada ativo.")
-    
-    st.markdown("---")
-    if tipo_distribuicao == '⚙️ Risco x Retorno (Markowitz)':
-        col_graf1, col_graf2 = st.columns([1.2, 1])
-        with col_graf1:
-            st.header("📈 Fronteira Eficiente"); retornos_diarios = precos_hist.pct_change().dropna(); matriz_cov_fronteira = retornos_diarios.cov()*252; retornos_esperados_fronteira = df_para_otimizar['DY_Medio'].reindex(matriz_cov_fronteira.columns); df_fronteira = gerar_fronteira_eficiente(retornos_esperados_fronteira, matriz_cov_fronteira); fig = go.Figure()
-            fig.add_trace(go.Scatter(x=df_fronteira.Volatilidade,y=df_fronteira.Retorno,mode='markers',marker=dict(size=5,color=df_fronteira.SharpeRatio,colorscale='Viridis',showscale=True,colorbar=dict(title='Índice Sharpe')),name='Carteiras Possíveis'))
-            fig.add_trace(go.Scatter(x=[vol_carteira_final],y=[ret_carteira_final],mode='markers',marker=dict(color='red',size=15,symbol='star'),name='Sua Carteira')); fig.update_layout(xaxis_title='Volatilidade',yaxis_title='Retorno Esperado'); st.plotly_chart(fig, use_container_width=True)
-        with col_graf2:
-            st.header("📊 Projeção de Dividendos Mensais"); fig = go.Figure(go.Bar(x=df_projecao['Mês'],y=df_projecao['Dividendo Projetado (R$)'],text=df_projecao['Dividendo Projetado (R$)'].apply(lambda x:f'R${x:,.2f}'),textposition='outside')); fig.update_layout(xaxis_title='Mês',yaxis_title='Valor (R$)',xaxis={'categoryorder':'array','categoryarray':list(calendar.month_name)[1:]}); st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.header("📊 Projeção de Dividendos Mensais"); fig = go.Figure(go.Bar(x=df_projecao['Mês'],y=df_projecao['Dividendo Projetado (R$)'],text=df_projecao['Dividendo Projetado (R$)'].apply(lambda x: f'R$ {x:,.2f}'),textposition='outside')); fig.update_layout(xaxis_title='Mês',yaxis_title='Valor (R$)',xaxis={'categoryorder':'array','categoryarray':list(calendar.month_name)[1:]}); st.plotly_chart(fig, use_container_width=True)
-    
-    st.header("🗓️ Tabela de Projeção Mensal"); st.dataframe(df_projecao.set_index('Mês').style.format({'Dividendo Projetado (R$)':'R$ {:,.2f}'}), use_container_width=True)
+if ativos_finais:
+    with st.expander("📋 Ver lista completa de ativos selecionados", expanded=False):
+        # Organizar em colunas para melhor visualização
+        num_cols = 4
+        cols = st.columns(num_cols)
+        for i, ativo in enumerate(sorted(ativos_finais)):
+            with cols[i % num_cols]:
+                st.write(f"• {ativo}")
 else:
-    st.info("Ajuste os filtros na barra lateral e clique em 'Analisar e Otimizar' para começar.")
-    st.subheader("Universo de Ativos Disponíveis (Dados do Yahoo Finance)"); st.dataframe(df_ativos_filtrados[['Ticker', 'Setor', 'DY_Medio', 'Preco_Atual']].style.format({'DY_Medio': '{:.2%}', 'Preco_Atual': 'R$ {:,.2f}'}))
+    st.warning("⚠️ Nenhum ativo selecionado. Por favor, selecione ou adicione ativos para continuar.")
+    st.stop()
+
+# Verificar se o período é válido
+if data_inicio >= data_fim:
+    st.error("❌ A data inicial deve ser anterior à data final!")
+    st.stop()
+
+# Botão para iniciar análise
+st.markdown("---")
+if st.button("🚀 Iniciar Análise e Otimização", type="primary", use_container_width=True):
+    
+    # Baixar dados
+    st.subheader("📥 Baixando Dados dos Ativos")
+    
+    with st.spinner("Baixando dados históricos..."):
+        try:
+            dados = yf.download(
+                ativos_finais,
+                start=data_inicio,
+                end=data_fim,
+                progress=False
+            )['Adj Close']
+            
+            # Se for apenas um ativo, converter para DataFrame
+            if len(ativos_finais) == 1:
+                dados = dados.to_frame()
+                dados.columns = ativos_finais
+            
+            # Remover ativos sem dados
+            dados = dados.dropna(axis=1, how='all')
+            
+            if dados.empty:
+                st.error("❌ Não foi possível obter dados para os ativos selecionados no período especificado.")
+                st.stop()
+            
+            # Atualizar lista de ativos com apenas os que têm dados
+            ativos_com_dados = dados.columns.tolist()
+            
+            if len(ativos_com_dados) < len(ativos_finais):
+                ativos_sem_dados = set(ativos_finais) - set(ativos_com_dados)
+                st.warning(f"⚠️ Os seguintes ativos não possuem dados no período selecionado e foram removidos: {', '.join(ativos_sem_dados)}")
+            
+            st.success(f"✅ Dados baixados com sucesso para {len(ativos_com_dados)} ativos!")
+            
+            # Mostrar preview dos dados
+            with st.expander("👁️ Visualizar dados históricos", expanded=False):
+                st.dataframe(dados.tail(10), use_container_width=True)
+            
+        except Exception as e:
+            st.error(f"❌ Erro ao baixar dados: {str(e)}")
+            st.stop()
+    
+    # Calcular retornos
+    st.subheader("📊 Análise de Retornos")
+    
+    retornos = dados.pct_change().dropna()
+    
+    # Estatísticas dos ativos
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.write("**Retorno Médio Diário (%)**")
+        retorno_medio = (retornos.mean() * 100).sort_values(ascending=False)
+        st.dataframe(retorno_medio.to_frame('Retorno (%)'), use_container_width=True)
+    
+    with col2:
+        st.write("**Volatilidade (Desvio Padrão) (%)**")
+        volatilidade = (retornos.std() * 100).sort_values(ascending=False)
+        st.dataframe(volatilidade.to_frame('Volatilidade (%)'), use_container_width=True)
+    
+    # Matriz de correlação
+    st.write("**Matriz de Correlação entre Ativos**")
+    correlacao = retornos.corr()
+    
+    fig_corr = go.Figure(data=go.Heatmap(
+        z=correlacao.values,
+        x=correlacao.columns,
+        y=correlacao.columns,
+        colorscale='RdBu',
+        zmid=0,
+        text=correlacao.values.round(2),
+        texttemplate='%{text}',
+        textfont={"size": 10},
+        colorbar=dict(title="Correlação")
+    ))
+    
+    fig_corr.update_layout(
+        title="Matriz de Correlação",
+        xaxis_title="Ativos",
+        yaxis_title="Ativos",
+        height=600
+    )
+    
+    st.plotly_chart(fig_corr, use_container_width=True)
+    
+    # Otimização da carteira
+    st.subheader("🎯 Otimização da Carteira")
+    
+    # Calcular retorno esperado e matriz de covariância
+    retorno_esperado = retornos.mean()
+    matriz_cov = retornos.cov()
+    
+    # Número de ativos
+    num_ativos = len(ativos_com_dados)
+    
+    # Função objetivo: minimizar volatilidade (risco)
+    def volatilidade_portfolio(pesos, matriz_cov):
+        return np.sqrt(np.dot(pesos.T, np.dot(matriz_cov, pesos))) * np.sqrt(252)
+    
+    # Função para calcular retorno do portfolio
+    def retorno_portfolio(pesos, retorno_esperado):
+        return np.sum(retorno_esperado * pesos) * 252
+    
+    # Função para calcular Sharpe Ratio
+    def sharpe_ratio_negativo(pesos, retorno_esperado, matriz_cov, taxa_livre_risco):
+        ret = retorno_portfolio(pesos, retorno_esperado)
+        vol = volatilidade_portfolio(pesos, matriz_cov)
+        return -(ret - taxa_livre_risco) / vol
+    
+    # Restrições e limites
+    restricoes = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
+    limites = tuple((0, 1) for _ in range(num_ativos))
+    pesos_iniciais = np.array([1/num_ativos] * num_ativos)
+    
+    # Otimização 1: Máximo Sharpe Ratio
+    with st.spinner("Otimizando carteira para máximo Sharpe Ratio..."):
+        resultado_sharpe = minimize(
+            sharpe_ratio_negativo,
+            pesos_iniciais,
+            args=(retorno_esperado, matriz_cov, taxa_livre_risco),
+            method='SLSQP',
+            bounds=limites,
+            constraints=restricoes
+        )
+    
+    # Otimização 2: Mínima Volatilidade
+    with st.spinner("Otimizando carteira para mínima volatilidade..."):
+        resultado_min_vol = minimize(
+            volatilidade_portfolio,
+            pesos_iniciais,
+            args=(matriz_cov,),
+            method='SLSQP',
+            bounds=limites,
+            constraints=restricoes
+        )
+    
+    # Resultados
+    pesos_sharpe = resultado_sharpe.x
+    pesos_min_vol = resultado_min_vol.x
+    
+    # Calcular métricas para ambas as carteiras
+    ret_sharpe = retorno_portfolio(pesos_sharpe, retorno_esperado)
+    vol_sharpe = volatilidade_portfolio(pesos_sharpe, matriz_cov)
+    sharpe_sharpe = (ret_sharpe - taxa_livre_risco) / vol_sharpe
+    
+    ret_min_vol = retorno_portfolio(pesos_min_vol, retorno_esperado)
+    vol_min_vol = volatilidade_portfolio(pesos_min_vol, matriz_cov)
+    sharpe_min_vol = (ret_min_vol - taxa_livre_risco) / vol_min_vol
+    
+    # Exibir resultados
+    st.markdown("---")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        st.write("### 🏆 Carteira com Máximo Sharpe Ratio")
+        st.metric("Retorno Esperado Anual", f"{ret_sharpe*100:.2f}%")
+        st.metric("Volatilidade Anual", f"{vol_sharpe*100:.2f}%")
+        st.metric("Sharpe Ratio", f"{sharpe_sharpe:.2f}")
+        
+        st.write("**Alocação:**")
+        df_sharpe = pd.DataFrame({
+            'Ativo': ativos_com_dados,
+            'Peso (%)': pesos_sharpe * 100,
+            'Valor (R$)': pesos_sharpe * capital_inicial
+        })
+        df_sharpe = df_sharpe[df_sharpe['Peso (%)'] > 0.01].sort_values('Peso (%)', ascending=False)
+        st.dataframe(df_sharpe.style.format({
+            'Peso (%)': '{:.2f}%',
+            'Valor (R$)': 'R$ {:.2f}'
+        }), use_container_width=True)
+        
+        # Gráfico de pizza
+        fig_pie_sharpe = go.Figure(data=[go.Pie(
+            labels=df_sharpe['Ativo'],
+            values=df_sharpe['Peso (%)'],
+            hole=0.3,
+            textinfo='label+percent',
+            textposition='auto'
+        )])
+        fig_pie_sharpe.update_layout(title="Distribuição da Carteira (Máximo Sharpe)")
+        st.plotly_chart(fig_pie_sharpe, use_container_width=True)
+    
+    with col2:
+        st.write("### 🛡️ Carteira de Mínima Volatilidade")
+        st.metric("Retorno Esperado Anual", f"{ret_min_vol*100:.2f}%")
+        st.metric("Volatilidade Anual", f"{vol_min_vol*100:.2f}%")
+        st.metric("Sharpe Ratio", f"{sharpe_min_vol:.2f}")
+        
+        st.write("**Alocação:**")
+        df_min_vol = pd.DataFrame({
+            'Ativo': ativos_com_dados,
+            'Peso (%)': pesos_min_vol * 100,
+            'Valor (R$)': pesos_min_vol * capital_inicial
+        })
+        df_min_vol = df_min_vol[df_min_vol['Peso (%)'] > 0.01].sort_values('Peso (%)', ascending=False)
+        st.dataframe(df_min_vol.style.format({
+            'Peso (%)': '{:.2f}%',
+            'Valor (R$)': 'R$ {:.2f}'
+        }), use_container_width=True)
+        
+        # Gráfico de pizza
+        fig_pie_min = go.Figure(data=[go.Pie(
+            labels=df_min_vol['Ativo'],
+            values=df_min_vol['Peso (%)'],
+            hole=0.3,
+            textinfo='label+percent',
+            textposition='auto'
+        )])
+        fig_pie_min.update_layout(title="Distribuição da Carteira (Mínima Volatilidade)")
+        st.plotly_chart(fig_pie_min, use_container_width=True)
+    
+    # Fronteira Eficiente
+    st.markdown("---")
+    st.subheader("📈 Fronteira Eficiente")
+    
+    with st.spinner("Calculando fronteira eficiente..."):
+        # Gerar carteiras aleatórias
+        num_portfolios = 5000
+        resultados = np.zeros((3, num_portfolios))
+        
+        for i in range(num_portfolios):
+            pesos = np.random.random(num_ativos)
+            pesos /= np.sum(pesos)
+            
+            ret = retorno_portfolio(pesos, retorno_esperado)
+            vol = volatilidade_portfolio(pesos, matriz_cov)
+            sharpe = (ret - taxa_livre_risco) / vol
+            
+            resultados[0, i] = ret
+            resultados[1, i] = vol
+            resultados[2, i] = sharpe
+    
+    # Plotar fronteira eficiente
+    fig_fronteira = go.Figure()
+    
+    # Carteiras aleatórias
+    fig_fronteira.add_trace(go.Scatter(
+        x=resultados[1, :] * 100,
+        y=resultados[0, :] * 100,
+        mode='markers',
+        marker=dict(
+            size=3,
+            color=resultados[2, :],
+            colorscale='Viridis',
+            showscale=True,
+            colorbar=dict(title="Sharpe<br>Ratio")
+        ),
+        name='Carteiras Simuladas',
+        text=[f'Sharpe: {s:.2f}' for s in resultados[2, :]],
+        hovertemplate='Volatilidade: %{x:.2f}%<br>Retorno: %{y:.2f}%<br>%{text}<extra></extra>'
+    ))
+    
+    # Carteira de máximo Sharpe
+    fig_fronteira.add_trace(go.Scatter(
+        x=[vol_sharpe * 100],
+        y=[ret_sharpe * 100],
+        mode='markers',
+        marker=dict(size=15, color='red', symbol='star'),
+        name='Máximo Sharpe Ratio',
+        hovertemplate='Volatilidade: %{x:.2f}%<br>Retorno: %{y:.2f}%<br>Sharpe: ' + f'{sharpe_sharpe:.2f}<extra></extra>'
+    ))
+    
+    # Carteira de mínima volatilidade
+    fig_fronteira.add_trace(go.Scatter(
+        x=[vol_min_vol * 100],
+        y=[ret_min_vol * 100],
+        mode='markers',
+        marker=dict(size=15, color='green', symbol='diamond'),
+        name='Mínima Volatilidade',
+        hovertemplate='Volatilidade: %{x:.2f}%<br>Retorno: %{y:.2f}%<br>Sharpe: ' + f'{sharpe_min_vol:.2f}<extra></extra>'
+    ))
+    
+    fig_fronteira.update_layout(
+        title="Fronteira Eficiente de Markowitz",
+        xaxis_title="Volatilidade Anual (%)",
+        yaxis_title="Retorno Esperado Anual (%)",
+        height=600,
+        hovermode='closest'
+    )
+    
+    st.plotly_chart(fig_fronteira, use_container_width=True)
+    
+    # Simulação de performance histórica
+    st.markdown("---")
+    st.subheader("📊 Performance Histórica das Carteiras")
+    
+    # Calcular valor das carteiras ao longo do tempo
+    retornos_sharpe = (retornos * pesos_sharpe).sum(axis=1)
+    retornos_min_vol = (retornos * pesos_min_vol).sum(axis=1)
+    
+    valor_sharpe = capital_inicial * (1 + retornos_sharpe).cumprod()
+    valor_min_vol = capital_inicial * (1 + retornos_min_vol).cumprod()
+    
+    # Gráfico de performance
+    fig_performance = go.Figure()
+    
+    fig_performance.add_trace(go.Scatter(
+        x=valor_sharpe.index,
+        y=valor_sharpe.values,
+        mode='lines',
+        name='Máximo Sharpe Ratio',
+        line=dict(color='red', width=2)
+    ))
+    
+    fig_performance.add_trace(go.Scatter(
+        x=valor_min_vol.index,
+        y=valor_min_vol.values,
+        mode='lines',
+        name='Mínima Volatilidade',
+        line=dict(color='green', width=2)
+    ))
+    
+    fig_performance.update_layout(
+        title="Evolução do Valor das Carteiras",
+        xaxis_title="Data",
+        yaxis_title="Valor da Carteira (R$)",
+        height=500,
+        hovermode='x unified'
+    )
+    
+    st.plotly_chart(fig_performance, use_container_width=True)
+    
+    # Estatísticas finais
+    st.markdown("---")
+    st.subheader("📋 Resumo Final")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric(
+            "Valor Final (Máx. Sharpe)",
+            f"R$ {valor_sharpe.iloc[-1]:,.2f}",
+            f"{((valor_sharpe.iloc[-1] / capital_inicial - 1) * 100):.2f}%"
+        )
+    
+    with col2:
+        st.metric(
+            "Valor Final (Mín. Vol)",
+            f"R$ {valor_min_vol.iloc[-1]:,.2f}",
+            f"{((valor_min_vol.iloc[-1] / capital_inicial - 1) * 100):.2f}%"
+        )
+    
+    with col3:
+        melhor = "Máximo Sharpe" if valor_sharpe.iloc[-1] > valor_min_vol.iloc[-1] else "Mínima Volatilidade"
+        st.metric("Melhor Performance", melhor)
+    
+    # Tabela comparativa final
+    st.write("**Comparação Detalhada:**")
+    
+    df_comparacao = pd.DataFrame({
+        'Métrica': [
+            'Retorno Esperado Anual',
+            'Volatilidade Anual',
+            'Sharpe Ratio',
+            'Valor Inicial',
+            'Valor Final',
+            'Retorno Total'
+        ],
+        'Máximo Sharpe Ratio': [
+            f"{ret_sharpe*100:.2f}%",
+            f"{vol_sharpe*100:.2f}%",
+            f"{sharpe_sharpe:.2f}",
+            f"R$ {capital_inicial:,.2f}",
+            f"R$ {valor_sharpe.iloc[-1]:,.2f}",
+            f"{((valor_sharpe.iloc[-1] / capital_inicial - 1) * 100):.2f}%"
+        ],
+        'Mínima Volatilidade': [
+            f"{ret_min_vol*100:.2f}%",
+            f"{vol_min_vol*100:.2f}%",
+            f"{sharpe_min_vol:.2f}",
+            f"R$ {capital_inicial:,.2f}",
+            f"R$ {valor_min_vol.iloc[-1]:,.2f}",
+            f"{((valor_min_vol.iloc[-1] / capital_inicial - 1) * 100):.2f}%"
+        ]
+    })
+    
+    st.dataframe(df_comparacao, use_container_width=True, hide_index=True)
+    
+    # Download dos resultados
+    st.markdown("---")
+    st.subheader("💾 Exportar Resultados")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # CSV da carteira Sharpe
+        csv_sharpe = df_sharpe.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📥 Download Carteira Máx. Sharpe (CSV)",
+            data=csv_sharpe,
+            file_name=f"carteira_max_sharpe_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv"
+        )
+    
+    with col2:
+        # CSV da carteira Min Vol
+        csv_min_vol = df_min_vol.to_csv(index=False).encode('utf-8')
+        st.download_button(
+            label="📥 Download Carteira Mín. Vol (CSV)",
+            data=csv_min_vol,
+            file_name=f"carteira_min_vol_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv"
+        )
+
+# Rodapé
+st.markdown("---")
+st.markdown("""
+    <div style='text-align: center; color: gray;'>
+        <p>Desenvolvido com ❤️ usando Streamlit | Dados fornecidos por Yahoo Finance</p>
+        <p style='font-size: 0.8em;'>⚠️ Este aplicativo é apenas para fins educacionais. 
+        Não constitui aconselhamento financeiro. Consulte um profissional qualificado antes de investir.</p>
+    </div>
+""", unsafe_allow_html=True)
