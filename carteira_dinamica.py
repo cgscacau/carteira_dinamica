@@ -250,10 +250,18 @@ with tab1:
             
             st.info(f"📊 {len(ativos_disponiveis)} ativos disponíveis")
             
+            # Verificar se os ativos selecionados estão na lista disponível
+            default_segmento = []
+            if st.session_state.ativos_selecionados:
+                default_segmento = [a for a in st.session_state.ativos_selecionados if a in ativos_disponiveis]
+            
+            if not default_segmento and ativos_disponiveis:
+                default_segmento = []
+            
             selected = st.multiselect(
                 "Ativos",
                 options=ativos_disponiveis,
-                default=st.session_state.ativos_selecionados if st.session_state.ativos_selecionados else [],
+                default=default_segmento,
                 key="multi_segmento"
             )
             
@@ -276,6 +284,8 @@ with tab1:
                     min(10, len(ativos_disponiveis))
                 )
                 st.rerun()
+        else:
+            st.info("👈 Selecione segmentos à esquerda")
 
 with tab2:
     populares = [
@@ -283,14 +293,29 @@ with tab2:
         'RENT3.SA', 'ABEV3.SA', 'B3SA3.SA', 'MGLU3.SA', 'RADL3.SA'
     ]
     
+    # Verificar se os ativos selecionados estão na lista de populares
+    default_populares = []
+    if st.session_state.ativos_selecionados:
+        default_populares = [a for a in st.session_state.ativos_selecionados if a in populares]
+    
     selected = st.multiselect(
         "Ações Populares",
         options=populares,
-        default=st.session_state.ativos_selecionados if st.session_state.ativos_selecionados else [],
+        default=default_populares,
         key="multi_populares"
     )
     
     st.session_state.ativos_selecionados = selected
+    
+    col1, col2 = st.columns(2)
+    
+    if col1.button("✅ Selecionar Todos", key="btn_todos_pop", use_container_width=True):
+        st.session_state.ativos_selecionados = populares
+        st.rerun()
+    
+    if col2.button("🗑️ Limpar", key="btn_limpar_pop", use_container_width=True):
+        st.session_state.ativos_selecionados = []
+        st.rerun()
 
 with tab3:
     st.info("💡 Use formato: PETR4.SA (Brasil) ou AAPL (EUA)")
@@ -298,13 +323,20 @@ with tab3:
     manual_input = st.text_area(
         "Digite os tickers (separados por vírgula ou linha)",
         height=100,
-        key="manual_input"
+        key="manual_input",
+        placeholder="PETR4.SA, VALE3.SA, ITUB4.SA\nou\nAAPL\nMSFT\nGOOGL"
     )
     
-    auto_sa = st.checkbox("Adicionar .SA automaticamente", value=False)
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        auto_sa = st.checkbox("Adicionar .SA automaticamente", value=False, key="auto_sa")
+    
+    with col2:
+        validar = st.checkbox("Validar ativos", value=True, key="validar")
     
     if manual_input:
-        tickers = manual_input.replace(',', ' ').replace('\n', ' ').split()
+        tickers = manual_input.replace(',', ' ').replace('\n', ' ').replace(';', ' ').split()
         tickers = [t.strip().upper() for t in tickers if t.strip()]
         
         if auto_sa:
@@ -312,8 +344,69 @@ with tab3:
         
         tickers = list(set(tickers))
         
-        st.session_state.ativos_selecionados = tickers
-        st.success(f"✅ {len(tickers)} ativos: {', '.join(tickers)}")
+        if validar:
+            with st.spinner("🔍 Validando ativos..."):
+                validos = []
+                invalidos = []
+                
+                progress = st.progress(0)
+                
+                for i, ticker in enumerate(tickers):
+                    try:
+                        ativo = yf.Ticker(ticker)
+                        hist = ativo.history(period="5d")
+                        if not hist.empty:
+                            validos.append(ticker)
+                        else:
+                            invalidos.append(ticker)
+                    except:
+                        invalidos.append(ticker)
+                    
+                    progress.progress((i + 1) / len(tickers))
+                
+                progress.empty()
+                
+                if validos:
+                    st.success(f"✅ Válidos: {', '.join(validos)}")
+                    st.session_state.ativos_selecionados = validos
+                
+                if invalidos:
+                    st.error(f"❌ Inválidos: {', '.join(invalidos)}")
+        else:
+            st.session_state.ativos_selecionados = tickers
+            st.success(f"✅ {len(tickers)} ativos adicionados")
+
+# ==================== RESUMO DA SELEÇÃO ====================
+
+st.divider()
+
+ativos_finais = st.session_state.ativos_selecionados
+
+if ativos_finais:
+    col1, col2, col3 = st.columns([1, 2, 1])
+    
+    with col1:
+        st.metric("🎯 Ativos Selecionados", len(ativos_finais))
+    
+    with col2:
+        with st.expander("📋 Ver Lista Completa", expanded=False):
+            cols = st.columns(5)
+            for i, ativo in enumerate(sorted(ativos_finais)):
+                with cols[i % 5]:
+                    st.write(f"✓ {ativo}")
+    
+    with col3:
+        if st.button("🗑️ Limpar Tudo", key="btn_limpar_tudo", use_container_width=True):
+            st.session_state.ativos_selecionados = []
+            st.rerun()
+else:
+    st.warning("⚠️ Nenhum ativo selecionado. Selecione ativos para continuar.")
+    st.stop()
+
+if data_inicio >= data_fim:
+    st.error("❌ Data inicial deve ser anterior à data final!")
+    st.stop()
+
 
 # ==================== RESUMO DA SELEÇÃO ====================
 
