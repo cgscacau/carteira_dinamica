@@ -193,28 +193,68 @@ if data_inicio >= data_fim:
 st.markdown("---")
 if st.button("🚀 Iniciar Análise e Otimização", type="primary", use_container_width=True):
     
+# Botão para iniciar análise
+st.markdown("---")
+if st.button("🚀 Iniciar Análise e Otimização", type="primary", use_container_width=True):
+    
     # Baixar dados
     st.subheader("📥 Baixando Dados dos Ativos")
     
     with st.spinner("Baixando dados históricos..."):
         try:
-            dados = yf.download(
-                ativos_finais,
-                start=data_inicio,
-                end=data_fim,
-                progress=False
-            )['Adj Close']
-            
-            # Se for apenas um ativo, converter para DataFrame
+            # Tentar baixar dados
             if len(ativos_finais) == 1:
-                dados = dados.to_frame()
-                dados.columns = ativos_finais
+                # Para um único ativo
+                ticker = yf.Ticker(ativos_finais[0])
+                dados_temp = ticker.history(start=data_inicio, end=data_fim)
+                if dados_temp.empty:
+                    st.error(f"❌ Não foi possível obter dados para {ativos_finais[0]}")
+                    st.stop()
+                dados = pd.DataFrame({ativos_finais[0]: dados_temp['Close']})
+            else:
+                # Para múltiplos ativos
+                dados = yf.download(
+                    ativos_finais,
+                    start=data_inicio,
+                    end=data_fim,
+                    progress=False
+                )
+                
+                # Verificar se retornou dados
+                if dados.empty:
+                    st.error("❌ Não foi possível obter dados para os ativos selecionados.")
+                    st.stop()
+                
+                # Tentar acessar 'Adj Close', se não existir usar 'Close'
+                if 'Adj Close' in dados.columns.get_level_values(0):
+                    dados = dados['Adj Close']
+                elif 'Close' in dados.columns.get_level_values(0):
+                    dados = dados['Close']
+                else:
+                    # Se os dados vieram em formato diferente
+                    if isinstance(dados.columns, pd.MultiIndex):
+                        dados = dados.xs('Close', level=0, axis=1)
+                    else:
+                        # Dados já estão no formato correto
+                        pass
             
-            # Remover ativos sem dados
+            # Garantir que dados seja um DataFrame
+            if not isinstance(dados, pd.DataFrame):
+                dados = dados.to_frame()
+            
+            # Remover colunas completamente vazias
             dados = dados.dropna(axis=1, how='all')
             
+            # Remover linhas com muitos NaN (mais de 50% de NaN)
+            threshold = len(dados.columns) * 0.5
+            dados = dados.dropna(thresh=threshold)
+            
+            # Preencher NaN restantes com forward fill e depois backward fill
+            dados = dados.fillna(method='ffill').fillna(method='bfill')
+            
             if dados.empty:
-                st.error("❌ Não foi possível obter dados para os ativos selecionados no período especificado.")
+                st.error("❌ Não foi possível obter dados válidos para os ativos selecionados no período especificado.")
+                st.info("💡 **Dicas:**\n- Verifique se os tickers estão corretos\n- Tente um período de datas diferente\n- Verifique se os ativos têm histórico de negociação no período selecionado")
                 st.stop()
             
             # Atualizar lista de ativos com apenas os que têm dados
@@ -224,15 +264,35 @@ if st.button("🚀 Iniciar Análise e Otimização", type="primary", use_contain
                 ativos_sem_dados = set(ativos_finais) - set(ativos_com_dados)
                 st.warning(f"⚠️ Os seguintes ativos não possuem dados no período selecionado e foram removidos: {', '.join(ativos_sem_dados)}")
             
+            if len(ativos_com_dados) < 2:
+                st.error("❌ É necessário pelo menos 2 ativos com dados válidos para otimização de carteira.")
+                st.stop()
+            
             st.success(f"✅ Dados baixados com sucesso para {len(ativos_com_dados)} ativos!")
             
             # Mostrar preview dos dados
             with st.expander("👁️ Visualizar dados históricos", expanded=False):
-                st.dataframe(dados.tail(10), use_container_width=True)
+                st.write(f"**Período:** {dados.index[0].strftime('%d/%m/%Y')} até {dados.index[-1].strftime('%d/%m/%Y')}")
+                st.write(f"**Total de dias:** {len(dados)}")
+                st.dataframe(dados.tail(10).style.format('{:.2f}'), use_container_width=True)
             
         except Exception as e:
             st.error(f"❌ Erro ao baixar dados: {str(e)}")
+            st.info("""
+            **Possíveis causas:**
+            - Tickers inválidos ou incorretos
+            - Problemas de conexão com Yahoo Finance
+            - Período de datas sem dados disponíveis
+            - Ativos deslistados ou sem histórico
+            
+            **Sugestões:**
+            - Verifique se os tickers estão corretos (ex: PETR4.SA para ações brasileiras)
+            - Tente com ativos diferentes
+            - Verifique sua conexão com a internet
+            - Tente um período de datas mais recente
+            """)
             st.stop()
+
     
     # Calcular retornos
     st.subheader("📊 Análise de Retornos")
