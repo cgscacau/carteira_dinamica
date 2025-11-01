@@ -4,7 +4,9 @@ import numpy as np
 import yfinance as yf
 from scipy.optimize import minimize
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
+import ativos_b3
 
 # Configuração da página
 st.set_page_config(
@@ -52,34 +54,100 @@ with st.sidebar:
         step=0.25,
         format="%.2f"
     ) / 100
+    
+    # Opções de análise
+    st.subheader("Análises")
+    incluir_dividendos = st.checkbox("Incluir Análise de Dividendos", value=True)
 
 # Seção de seleção de ativos
 st.subheader("📊 Seleção de Ativos")
 
-# Lista de ativos pré-definidos para busca rápida
-ativos_populares = [
-    'PETR4.SA', 'VALE3.SA', 'ITUB4.SA', 'BBDC4.SA', 'ABEV3.SA',
-    'WEGE3.SA', 'RENT3.SA', 'MGLU3.SA', 'B3SA3.SA', 'SUZB3.SA',
-    'BBAS3.SA', 'SANB11.SA', 'EGIE3.SA', 'CPLE6.SA', 'VIVT3.SA',
-    'RADL3.SA', 'RAIL3.SA', 'EMBR3.SA', 'CSNA3.SA', 'USIM5.SA'
-]
-
 # Criar abas para diferentes métodos de seleção
-tab1, tab2 = st.tabs(["🔍 Buscar Ativos", "✏️ Adicionar Manualmente"])
+tab1, tab2, tab3 = st.tabs(["🔍 Buscar por Segmento", "📋 Lista Rápida", "✏️ Adicionar Manualmente"])
 
 ativos_selecionados_busca = []
+ativos_selecionados_segmento = []
 ativos_manuais = []
 
 with tab1:
-    st.write("Selecione ativos da lista de ações populares da B3:")
+    st.write("Selecione ativos organizados por tipo e segmento:")
+    
+    # Seletor de tipo de ativo
+    tipo_ativo = st.selectbox(
+        "Tipo de Ativo:",
+        ["Ações", "FIIs (Fundos Imobiliários)", "ETFs", "BDRs"],
+        help="Escolha o tipo de ativo que deseja analisar"
+    )
+    
+    # Mapear seleção para os dados
+    tipo_map = {
+        "Ações": ativos_b3.ACOES_B3,
+        "FIIs (Fundos Imobiliários)": ativos_b3.FIIS,
+        "ETFs": ativos_b3.ETFS,
+        "BDRs": ativos_b3.BDRS
+    }
+    
+    dados_tipo = tipo_map[tipo_ativo]
+    
+    # Seletor de segmento
+    col1, col2 = st.columns([1, 2])
+    
+    with col1:
+        segmentos_selecionados = st.multiselect(
+            "Selecione os Segmentos:",
+            options=list(dados_tipo.keys()),
+            help="Escolha um ou mais segmentos"
+        )
+    
+    with col2:
+        if segmentos_selecionados:
+            # Coletar ativos dos segmentos selecionados
+            ativos_disponiveis = []
+            for segmento in segmentos_selecionados:
+                ativos_disponiveis.extend(dados_tipo[segmento])
+            
+            ativos_disponiveis = sorted(list(set(ativos_disponiveis)))
+            
+            ativos_selecionados_segmento = st.multiselect(
+                f"Ativos disponíveis ({len(ativos_disponiveis)}):",
+                options=ativos_disponiveis,
+                default=ativos_disponiveis[:5] if len(ativos_disponiveis) >= 5 else ativos_disponiveis,
+                help="Selecione os ativos específicos que deseja analisar"
+            )
+            
+            if ativos_selecionados_segmento:
+                st.info(f"✅ {len(ativos_selecionados_segmento)} ativos selecionados")
+    
+    # Botão para selecionar todos do segmento
+    if segmentos_selecionados:
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            if st.button("Selecionar Todos"):
+                ativos_selecionados_segmento = ativos_disponiveis
+                st.rerun()
+        with col2:
+            if st.button("Limpar Seleção"):
+                ativos_selecionados_segmento = []
+                st.rerun()
+
+with tab2:
+    st.write("Selecione ativos de uma lista rápida:")
+    
+    ativos_populares = [
+        'PETR4.SA', 'VALE3.SA', 'ITUB4.SA', 'BBDC4.SA', 'ABEV3.SA',
+        'WEGE3.SA', 'RENT3.SA', 'MGLU3.SA', 'B3SA3.SA', 'SUZB3.SA',
+        'BBAS3.SA', 'SANB11.SA', 'EGIE3.SA', 'CPLE6.SA', 'VIVT3.SA',
+        'RADL3.SA', 'RAIL3.SA', 'EMBR3.SA', 'CSNA3.SA', 'USIM5.SA'
+    ]
+    
     ativos_selecionados_busca = st.multiselect(
-        "Ativos disponíveis:",
+        "Ações Populares:",
         options=sorted(ativos_populares),
         default=['PETR4.SA', 'VALE3.SA', 'ITUB4.SA', 'BBDC4.SA'],
         help="Selecione os ativos que deseja incluir na análise"
     )
 
-with tab2:
+with tab3:
     st.write("Adicione ativos manualmente digitando os tickers:")
     
     col1, col2 = st.columns([3, 1])
@@ -104,25 +172,20 @@ with tab2:
     
     # Processar ativos manuais
     if ativos_manuais_input:
-        # Substituir vírgulas e quebras de linha por espaços e dividir
         ativos_temp = ativos_manuais_input.replace(',', ' ').replace('\n', ' ').split()
-        # Limpar espaços extras e converter para maiúsculas
         ativos_manuais = [ativo.strip().upper() for ativo in ativos_temp if ativo.strip()]
         
-        # Adicionar sufixo se solicitado
         if adicionar_sufixo:
             ativos_manuais = [
                 ativo if '.SA' in ativo.upper() or '.' in ativo else f"{ativo}.SA" 
                 for ativo in ativos_manuais
             ]
         
-        # Remover duplicatas
         ativos_manuais = list(set(ativos_manuais))
         
         if ativos_manuais:
             st.success(f"✅ {len(ativos_manuais)} ativo(s) adicionado(s): {', '.join(ativos_manuais)}")
             
-            # Validar ativos
             if st.checkbox("🔍 Validar ativos antes de usar", value=True):
                 with st.spinner("Validando ativos..."):
                     ativos_validos = []
@@ -135,7 +198,6 @@ with tab2:
                         status_text.text(f"Validando {ativo}...")
                         try:
                             ticker = yf.Ticker(ativo)
-                            # Tentar obter dados recentes
                             hist = ticker.history(period="5d")
                             if not hist.empty and len(hist) > 0:
                                 ativos_validos.append(ativo)
@@ -156,25 +218,25 @@ with tab2:
                         st.error(f"❌ Ativos inválidos ou sem dados ({len(ativos_invalidos)}): {', '.join(ativos_invalidos)}")
                         st.warning("⚠️ Os ativos inválidos serão removidos da análise.")
                     
-                    # Atualizar lista com apenas ativos válidos
                     ativos_manuais = ativos_validos
 
-# Combinar ativos de ambas as fontes e remover duplicatas
-ativos_finais = list(set(ativos_selecionados_busca + ativos_manuais))
+# Combinar ativos de todas as fontes e remover duplicatas
+ativos_finais = list(set(ativos_selecionados_busca + ativos_selecionados_segmento + ativos_manuais))
 
 # Mostrar resumo final
 st.markdown("---")
-col1, col2, col3 = st.columns(3)
+col1, col2, col3, col4 = st.columns(4)
 with col1:
-    st.metric("Ativos da Busca", len(ativos_selecionados_busca))
+    st.metric("Lista Rápida", len(ativos_selecionados_busca))
 with col2:
-    st.metric("Ativos Manuais", len(ativos_manuais))
+    st.metric("Por Segmento", len(ativos_selecionados_segmento))
 with col3:
-    st.metric("Total de Ativos", len(ativos_finais))
+    st.metric("Manuais", len(ativos_manuais))
+with col4:
+    st.metric("Total", len(ativos_finais))
 
 if ativos_finais:
     with st.expander("📋 Ver lista completa de ativos selecionados", expanded=False):
-        # Organizar em colunas para melhor visualização
         num_cols = 4
         cols = st.columns(num_cols)
         for i, ativo in enumerate(sorted(ativos_finais)):
@@ -198,9 +260,7 @@ if st.button("🚀 Iniciar Análise e Otimização", type="primary", use_contain
     
     with st.spinner("Baixando dados históricos..."):
         try:
-            # Tentar baixar dados
             if len(ativos_finais) == 1:
-                # Para um único ativo
                 ticker = yf.Ticker(ativos_finais[0])
                 dados_temp = ticker.history(start=data_inicio, end=data_fim)
                 if dados_temp.empty:
@@ -208,7 +268,6 @@ if st.button("🚀 Iniciar Análise e Otimização", type="primary", use_contain
                     st.stop()
                 dados = pd.DataFrame({ativos_finais[0]: dados_temp['Close']})
             else:
-                # Para múltiplos ativos
                 dados = yf.download(
                     ativos_finais,
                     start=data_inicio,
@@ -216,39 +275,27 @@ if st.button("🚀 Iniciar Análise e Otimização", type="primary", use_contain
                     progress=False
                 )
                 
-                # Verificar se retornou dados
                 if dados.empty:
                     st.error("❌ Não foi possível obter dados para os ativos selecionados.")
                     st.stop()
                 
-                # Tentar acessar 'Adj Close', se não existir usar 'Close'
                 if isinstance(dados.columns, pd.MultiIndex):
                     if 'Adj Close' in dados.columns.get_level_values(0):
                         dados = dados['Adj Close']
                     elif 'Close' in dados.columns.get_level_values(0):
                         dados = dados['Close']
                     else:
-                        # Pegar a primeira coluna de preço disponível
                         dados = dados.iloc[:, dados.columns.get_level_values(0) == dados.columns.get_level_values(0)[0]]
                         dados.columns = dados.columns.droplevel(0)
-                else:
-                    # Dados já estão no formato correto
-                    pass
             
-            # Garantir que dados seja um DataFrame
             if not isinstance(dados, pd.DataFrame):
                 dados = dados.to_frame()
                 if len(ativos_finais) == 1:
                     dados.columns = ativos_finais
             
-            # Remover colunas completamente vazias
             dados = dados.dropna(axis=1, how='all')
-            
-            # Remover linhas com muitos NaN (mais de 50% de NaN)
             threshold = len(dados.columns) * 0.5
             dados = dados.dropna(thresh=threshold)
-            
-            # Preencher NaN restantes com forward fill e depois backward fill
             dados = dados.ffill().bfill()
             
             if dados.empty:
@@ -256,7 +303,6 @@ if st.button("🚀 Iniciar Análise e Otimização", type="primary", use_contain
                 st.info("💡 **Dicas:**\n- Verifique se os tickers estão corretos\n- Tente um período de datas diferente\n- Verifique se os ativos têm histórico de negociação no período selecionado")
                 st.stop()
             
-            # Atualizar lista de ativos com apenas os que têm dados
             ativos_com_dados = dados.columns.tolist()
             
             if len(ativos_com_dados) < len(ativos_finais):
@@ -269,7 +315,6 @@ if st.button("🚀 Iniciar Análise e Otimização", type="primary", use_contain
             
             st.success(f"✅ Dados baixados com sucesso para {len(ativos_com_dados)} ativos!")
             
-            # Mostrar preview dos dados
             with st.expander("👁️ Visualizar dados históricos", expanded=False):
                 st.write(f"**Período:** {dados.index[0].strftime('%d/%m/%Y')} até {dados.index[-1].strftime('%d/%m/%Y')}")
                 st.write(f"**Total de dias:** {len(dados)}")
@@ -292,7 +337,127 @@ if st.button("🚀 Iniciar Análise e Otimização", type="primary", use_contain
             """)
             st.stop()
     
+    # Análise de Dividendos (se habilitada)
+    if incluir_dividendos:
+        st.markdown("---")
+        st.subheader("💰 Análise de Dividendos")
+        
+        with st.spinner("Coletando dados de dividendos..."):
+            try:
+                dividendos_data = {}
+                
+                for ativo in ativos_com_dados:
+                    ticker = yf.Ticker(ativo)
+                    divs = ticker.dividends
+                    
+                    if not divs.empty:
+                        # Filtrar dividendos no período
+                        divs = divs[(divs.index >= pd.Timestamp(data_inicio)) & (divs.index <= pd.Timestamp(data_fim))]
+                        if not divs.empty:
+                            dividendos_data[ativo] = divs
+                
+                if dividendos_data:
+                    # Criar DataFrame com dividendos mensais
+                    df_dividendos = pd.DataFrame()
+                    
+                    for ativo, divs in dividendos_data.items():
+                        # Agrupar por mês
+                        divs_mensais = divs.resample('M').sum()
+                        df_dividendos[ativo] = divs_mensais
+                    
+                    # Preencher NaN com 0
+                    df_dividendos = df_dividendos.fillna(0)
+                    
+                    # Criar gráfico de barras empilhadas
+                    fig_div = go.Figure()
+                    
+                    for ativo in df_dividendos.columns:
+                        fig_div.add_trace(go.Bar(
+                            name=ativo,
+                            x=df_dividendos.index,
+                            y=df_dividendos[ativo],
+                            text=df_dividendos[ativo].apply(lambda x: f'R$ {x:.2f}' if x > 0 else ''),
+                            textposition='inside'
+                        ))
+                    
+                    fig_div.update_layout(
+                        title="Distribuição de Dividendos Mensais por Ativo",
+                        xaxis_title="Mês",
+                        yaxis_title="Dividendos (R$)",
+                        barmode='stack',
+                        height=500,
+                        hovermode='x unified',
+                        legend=dict(
+                            orientation="h",
+                            yanchor="bottom",
+                            y=1.02,
+                            xanchor="right",
+                            x=1
+                        )
+                    )
+                    
+                    st.plotly_chart(fig_div, use_container_width=True)
+                    
+                    # Tabela resumo de dividendos
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.write("**Dividendos Totais por Ativo (R$)**")
+                        div_totais = df_dividendos.sum().sort_values(ascending=False)
+                        st.dataframe(
+                            div_totais.to_frame('Total').style.format('R$ {:.2f}'),
+                            use_container_width=True
+                        )
+                    
+                    with col2:
+                        st.write("**Dividend Yield Médio Mensal (%)**")
+                        # Calcular DY aproximado
+                        dy_data = []
+                        for ativo in df_dividendos.columns:
+                            preco_medio = dados[ativo].mean()
+                            div_medio_mensal = df_dividendos[ativo].mean()
+                            dy = (div_medio_mensal / preco_medio) * 100 if preco_medio > 0 else 0
+                            dy_data.append({'Ativo': ativo, 'DY Mensal (%)': dy})
+                        
+                        df_dy = pd.DataFrame(dy_data).set_index('Ativo').sort_values('DY Mensal (%)', ascending=False)
+                        st.dataframe(
+                            df_dy.style.format('{:.2f}%'),
+                            use_container_width=True
+                        )
+                    
+                    # Gráfico de linha com dividendos acumulados
+                    st.write("**Dividendos Acumulados no Período**")
+                    df_div_acum = df_dividendos.cumsum()
+                    
+                    fig_div_acum = go.Figure()
+                    
+                    for ativo in df_div_acum.columns:
+                        fig_div_acum.add_trace(go.Scatter(
+                            name=ativo,
+                            x=df_div_acum.index,
+                            y=df_div_acum[ativo],
+                            mode='lines+markers',
+                            line=dict(width=2)
+                        ))
+                    
+                    fig_div_acum.update_layout(
+                        title="Evolução dos Dividendos Acumulados",
+                        xaxis_title="Mês",
+                        yaxis_title="Dividendos Acumulados (R$)",
+                        height=400,
+                        hovermode='x unified'
+                    )
+                    
+                    st.plotly_chart(fig_div_acum, use_container_width=True)
+                    
+                else:
+                    st.info("ℹ️ Nenhum dividendo encontrado para os ativos selecionados no período analisado.")
+                    
+            except Exception as e:
+                st.warning(f"⚠️ Não foi possível coletar dados de dividendos: {str(e)}")
+    
     # Calcular retornos
+    st.markdown("---")
     st.subheader("📊 Análise de Retornos")
     
     retornos = dados.pct_change().dropna()
@@ -303,12 +468,12 @@ if st.button("🚀 Iniciar Análise e Otimização", type="primary", use_contain
     with col1:
         st.write("**Retorno Médio Diário (%)**")
         retorno_medio = (retornos.mean() * 100).sort_values(ascending=False)
-        st.dataframe(retorno_medio.to_frame('Retorno (%)').style.format('{:.4f}%'), use_container_width=True)
+        st.dataframe(retorno_medio.to_frame('Retorno (%)').style.format('{:.4f}'), use_container_width=True)
     
     with col2:
         st.write("**Volatilidade (Desvio Padrão) (%)**")
         volatilidade = (retornos.std() * 100).sort_values(ascending=False)
-        st.dataframe(volatilidade.to_frame('Volatilidade (%)').style.format('{:.4f}%'), use_container_width=True)
+        st.dataframe(volatilidade.to_frame('Volatilidade (%)').style.format('{:.4f}'), use_container_width=True)
     
     # Matriz de correlação
     st.write("**Matriz de Correlação entre Ativos**")
@@ -338,33 +503,25 @@ if st.button("🚀 Iniciar Análise e Otimização", type="primary", use_contain
     # Otimização da carteira
     st.subheader("🎯 Otimização da Carteira")
     
-    # Calcular retorno esperado e matriz de covariância
     retorno_esperado = retornos.mean()
     matriz_cov = retornos.cov()
-    
-    # Número de ativos
     num_ativos = len(ativos_com_dados)
     
-    # Função objetivo: minimizar volatilidade (risco)
     def volatilidade_portfolio(pesos, matriz_cov):
         return np.sqrt(np.dot(pesos.T, np.dot(matriz_cov, pesos))) * np.sqrt(252)
     
-    # Função para calcular retorno do portfolio
     def retorno_portfolio(pesos, retorno_esperado):
         return np.sum(retorno_esperado * pesos) * 252
     
-    # Função para calcular Sharpe Ratio
     def sharpe_ratio_negativo(pesos, retorno_esperado, matriz_cov, taxa_livre_risco):
         ret = retorno_portfolio(pesos, retorno_esperado)
         vol = volatilidade_portfolio(pesos, matriz_cov)
         return -(ret - taxa_livre_risco) / vol
     
-    # Restrições e limites
     restricoes = ({'type': 'eq', 'fun': lambda x: np.sum(x) - 1})
     limites = tuple((0, 1) for _ in range(num_ativos))
     pesos_iniciais = np.array([1/num_ativos] * num_ativos)
     
-    # Otimização 1: Máximo Sharpe Ratio
     with st.spinner("Otimizando carteira para máximo Sharpe Ratio..."):
         resultado_sharpe = minimize(
             sharpe_ratio_negativo,
@@ -375,7 +532,6 @@ if st.button("🚀 Iniciar Análise e Otimização", type="primary", use_contain
             constraints=restricoes
         )
     
-    # Otimização 2: Mínima Volatilidade
     with st.spinner("Otimizando carteira para mínima volatilidade..."):
         resultado_min_vol = minimize(
             volatilidade_portfolio,
@@ -386,11 +542,9 @@ if st.button("🚀 Iniciar Análise e Otimização", type="primary", use_contain
             constraints=restricoes
         )
     
-    # Resultados
     pesos_sharpe = resultado_sharpe.x
     pesos_min_vol = resultado_min_vol.x
     
-    # Calcular métricas para ambas as carteiras
     ret_sharpe = retorno_portfolio(pesos_sharpe, retorno_esperado)
     vol_sharpe = volatilidade_portfolio(pesos_sharpe, matriz_cov)
     sharpe_sharpe = (ret_sharpe - taxa_livre_risco) / vol_sharpe
@@ -399,7 +553,6 @@ if st.button("🚀 Iniciar Análise e Otimização", type="primary", use_contain
     vol_min_vol = volatilidade_portfolio(pesos_min_vol, matriz_cov)
     sharpe_min_vol = (ret_min_vol - taxa_livre_risco) / vol_min_vol
     
-    # Exibir resultados
     st.markdown("---")
     
     col1, col2 = st.columns(2)
@@ -422,7 +575,6 @@ if st.button("🚀 Iniciar Análise e Otimização", type="primary", use_contain
             'Valor (R$)': '{:.2f}'
         }), use_container_width=True)
         
-        # Gráfico de pizza
         fig_pie_sharpe = go.Figure(data=[go.Pie(
             labels=df_sharpe['Ativo'],
             values=df_sharpe['Peso (%)'],
@@ -451,7 +603,6 @@ if st.button("🚀 Iniciar Análise e Otimização", type="primary", use_contain
             'Valor (R$)': '{:.2f}'
         }), use_container_width=True)
         
-        # Gráfico de pizza
         fig_pie_min = go.Figure(data=[go.Pie(
             labels=df_min_vol['Ativo'],
             values=df_min_vol['Peso (%)'],
@@ -467,7 +618,6 @@ if st.button("🚀 Iniciar Análise e Otimização", type="primary", use_contain
     st.subheader("📈 Fronteira Eficiente")
     
     with st.spinner("Calculando fronteira eficiente..."):
-        # Gerar carteiras aleatórias
         num_portfolios = 5000
         resultados = np.zeros((3, num_portfolios))
         
@@ -483,10 +633,8 @@ if st.button("🚀 Iniciar Análise e Otimização", type="primary", use_contain
             resultados[1, i] = vol
             resultados[2, i] = sharpe
     
-    # Plotar fronteira eficiente
     fig_fronteira = go.Figure()
     
-    # Carteiras aleatórias
     fig_fronteira.add_trace(go.Scatter(
         x=resultados[1, :] * 100,
         y=resultados[0, :] * 100,
@@ -503,7 +651,6 @@ if st.button("🚀 Iniciar Análise e Otimização", type="primary", use_contain
         hovertemplate='Volatilidade: %{x:.2f}%<br>Retorno: %{y:.2f}%<br>%{text}<extra></extra>'
     ))
     
-    # Carteira de máximo Sharpe
     fig_fronteira.add_trace(go.Scatter(
         x=[vol_sharpe * 100],
         y=[ret_sharpe * 100],
@@ -513,7 +660,6 @@ if st.button("🚀 Iniciar Análise e Otimização", type="primary", use_contain
         hovertemplate='Volatilidade: %{x:.2f}%<br>Retorno: %{y:.2f}%<br>Sharpe: ' + f'{sharpe_sharpe:.2f}<extra></extra>'
     ))
     
-    # Carteira de mínima volatilidade
     fig_fronteira.add_trace(go.Scatter(
         x=[vol_min_vol * 100],
         y=[ret_min_vol * 100],
@@ -533,18 +679,16 @@ if st.button("🚀 Iniciar Análise e Otimização", type="primary", use_contain
     
     st.plotly_chart(fig_fronteira, use_container_width=True)
     
-    # Simulação de performance histórica
+    # Performance Histórica
     st.markdown("---")
     st.subheader("📊 Performance Histórica das Carteiras")
     
-    # Calcular valor das carteiras ao longo do tempo
     retornos_sharpe = (retornos * pesos_sharpe).sum(axis=1)
     retornos_min_vol = (retornos * pesos_min_vol).sum(axis=1)
     
     valor_sharpe = capital_inicial * (1 + retornos_sharpe).cumprod()
     valor_min_vol = capital_inicial * (1 + retornos_min_vol).cumprod()
     
-    # Gráfico de performance
     fig_performance = go.Figure()
     
     fig_performance.add_trace(go.Scatter(
@@ -573,7 +717,7 @@ if st.button("🚀 Iniciar Análise e Otimização", type="primary", use_contain
     
     st.plotly_chart(fig_performance, use_container_width=True)
     
-    # Estatísticas finais
+    # Resumo Final
     st.markdown("---")
     st.subheader("📋 Resumo Final")
     
@@ -596,9 +740,6 @@ if st.button("🚀 Iniciar Análise e Otimização", type="primary", use_contain
     with col3:
         melhor = "Máximo Sharpe" if valor_sharpe.iloc[-1] > valor_min_vol.iloc[-1] else "Mínima Volatilidade"
         st.metric("Melhor Performance", melhor)
-    
-    # Tabela comparativa final
-    st.write("**Comparação Detalhada:**")
     
     df_comparacao = pd.DataFrame({
         'Métrica': [
@@ -629,14 +770,13 @@ if st.button("🚀 Iniciar Análise e Otimização", type="primary", use_contain
     
     st.dataframe(df_comparacao, use_container_width=True, hide_index=True)
     
-    # Download dos resultados
+    # Download
     st.markdown("---")
     st.subheader("💾 Exportar Resultados")
     
     col1, col2 = st.columns(2)
     
     with col1:
-        # CSV da carteira Sharpe
         csv_sharpe = df_sharpe.to_csv(index=False).encode('utf-8')
         st.download_button(
             label="📥 Download Carteira Máx. Sharpe (CSV)",
@@ -646,7 +786,6 @@ if st.button("🚀 Iniciar Análise e Otimização", type="primary", use_contain
         )
     
     with col2:
-        # CSV da carteira Min Vol
         csv_min_vol = df_min_vol.to_csv(index=False).encode('utf-8')
         st.download_button(
             label="📥 Download Carteira Mín. Vol (CSV)",
