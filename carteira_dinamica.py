@@ -193,10 +193,6 @@ if data_inicio >= data_fim:
 st.markdown("---")
 if st.button("🚀 Iniciar Análise e Otimização", type="primary", use_container_width=True):
     
-# Botão para iniciar análise
-st.markdown("---")
-if st.button("🚀 Iniciar Análise e Otimização", type="primary", use_container_width=True):
-    
     # Baixar dados
     st.subheader("📥 Baixando Dados dos Ativos")
     
@@ -226,21 +222,24 @@ if st.button("🚀 Iniciar Análise e Otimização", type="primary", use_contain
                     st.stop()
                 
                 # Tentar acessar 'Adj Close', se não existir usar 'Close'
-                if 'Adj Close' in dados.columns.get_level_values(0):
-                    dados = dados['Adj Close']
-                elif 'Close' in dados.columns.get_level_values(0):
-                    dados = dados['Close']
-                else:
-                    # Se os dados vieram em formato diferente
-                    if isinstance(dados.columns, pd.MultiIndex):
-                        dados = dados.xs('Close', level=0, axis=1)
+                if isinstance(dados.columns, pd.MultiIndex):
+                    if 'Adj Close' in dados.columns.get_level_values(0):
+                        dados = dados['Adj Close']
+                    elif 'Close' in dados.columns.get_level_values(0):
+                        dados = dados['Close']
                     else:
-                        # Dados já estão no formato correto
-                        pass
+                        # Pegar a primeira coluna de preço disponível
+                        dados = dados.iloc[:, dados.columns.get_level_values(0) == dados.columns.get_level_values(0)[0]]
+                        dados.columns = dados.columns.droplevel(0)
+                else:
+                    # Dados já estão no formato correto
+                    pass
             
             # Garantir que dados seja um DataFrame
             if not isinstance(dados, pd.DataFrame):
                 dados = dados.to_frame()
+                if len(ativos_finais) == 1:
+                    dados.columns = ativos_finais
             
             # Remover colunas completamente vazias
             dados = dados.dropna(axis=1, how='all')
@@ -250,7 +249,7 @@ if st.button("🚀 Iniciar Análise e Otimização", type="primary", use_contain
             dados = dados.dropna(thresh=threshold)
             
             # Preencher NaN restantes com forward fill e depois backward fill
-            dados = dados.fillna(method='ffill').fillna(method='bfill')
+            dados = dados.ffill().bfill()
             
             if dados.empty:
                 st.error("❌ Não foi possível obter dados válidos para os ativos selecionados no período especificado.")
@@ -292,7 +291,6 @@ if st.button("🚀 Iniciar Análise e Otimização", type="primary", use_contain
             - Tente um período de datas mais recente
             """)
             st.stop()
-
     
     # Calcular retornos
     st.subheader("📊 Análise de Retornos")
@@ -305,12 +303,12 @@ if st.button("🚀 Iniciar Análise e Otimização", type="primary", use_contain
     with col1:
         st.write("**Retorno Médio Diário (%)**")
         retorno_medio = (retornos.mean() * 100).sort_values(ascending=False)
-        st.dataframe(retorno_medio.to_frame('Retorno (%)'), use_container_width=True)
+        st.dataframe(retorno_medio.to_frame('Retorno (%)').style.format('{:.4f}%'), use_container_width=True)
     
     with col2:
         st.write("**Volatilidade (Desvio Padrão) (%)**")
         volatilidade = (retornos.std() * 100).sort_values(ascending=False)
-        st.dataframe(volatilidade.to_frame('Volatilidade (%)'), use_container_width=True)
+        st.dataframe(volatilidade.to_frame('Volatilidade (%)').style.format('{:.4f}%'), use_container_width=True)
     
     # Matriz de correlação
     st.write("**Matriz de Correlação entre Ativos**")
@@ -322,7 +320,7 @@ if st.button("🚀 Iniciar Análise e Otimização", type="primary", use_contain
         y=correlacao.columns,
         colorscale='RdBu',
         zmid=0,
-        text=correlacao.values.round(2),
+        text=np.round(correlacao.values, 2),
         texttemplate='%{text}',
         textfont={"size": 10},
         colorbar=dict(title="Correlação")
@@ -420,8 +418,8 @@ if st.button("🚀 Iniciar Análise e Otimização", type="primary", use_contain
         })
         df_sharpe = df_sharpe[df_sharpe['Peso (%)'] > 0.01].sort_values('Peso (%)', ascending=False)
         st.dataframe(df_sharpe.style.format({
-            'Peso (%)': '{:.2f}%',
-            'Valor (R$)': 'R$ {:.2f}'
+            'Peso (%)': '{:.2f}',
+            'Valor (R$)': '{:.2f}'
         }), use_container_width=True)
         
         # Gráfico de pizza
@@ -449,8 +447,8 @@ if st.button("🚀 Iniciar Análise e Otimização", type="primary", use_contain
         })
         df_min_vol = df_min_vol[df_min_vol['Peso (%)'] > 0.01].sort_values('Peso (%)', ascending=False)
         st.dataframe(df_min_vol.style.format({
-            'Peso (%)': '{:.2f}%',
-            'Valor (R$)': 'R$ {:.2f}'
+            'Peso (%)': '{:.2f}',
+            'Valor (R$)': '{:.2f}'
         }), use_container_width=True)
         
         # Gráfico de pizza
